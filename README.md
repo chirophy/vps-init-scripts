@@ -49,4 +49,8 @@ bash <(curl -fsSL https://gist.githubusercontent.com/chirophy/5fbbad98f4dd048cd9
 
 ## 国内 VPS
 
-`domestic-vps-init.sh` 用于 Docker / Compose 自托管服务部署，当前未提供对应的远程运行地址。部署前建议先处理其中固定的 Browserless 令牌 `rsshub`；运行日志可能包含首次生成的管理员密码，请勿上传。
+`domestic-vps-init.sh` 用于 Docker / Compose 自托管服务部署，当前未提供对应的远程运行地址。
+
+Browserless 认证令牌在部署时随机生成，保存在服务器的 `/opt/stacks/.browserless.env`（权限 0600），重跑脚本时复用。请勿上传此文件。手动管理容器时，在 `/opt/stacks` 目录中使用 `docker compose --env-file .browserless.env <子命令>`；启动可选服务时还需带对应的 `--profile` 参数。
+
+运行日志可能包含首次生成的管理员密码，请勿上传。
