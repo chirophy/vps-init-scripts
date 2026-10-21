@@ -14,7 +14,7 @@
 | `domestic-vps-init.sh` | 国内 VPS 的 Docker / Compose 自托管服务部署 |
 | `README.md` | 版本选择和运行方法 |
 
-整合入口新增或修改公共逻辑时，优先维护对应函数，并核对旧版是否需要同步；`tests/unified-init-test.sh` 使用替身验证场景调度、TCP 差异和 Compose 配置生成。
+整合入口新增或修改公共逻辑时，优先维护对应函数，并核对旧版是否需要同步；`tests/unified-init-test.sh` 验证场景调度、TCP 差异和 Compose 配置生成，`tests/reliability-test.sh` 验证四种模式、配置恢复、健康验收和后台任务选项，均使用隔离文件和替身。
 
 ## 修改原则
 

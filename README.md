@@ -2,7 +2,7 @@
 
 适用于 Debian 11+ / Ubuntu 22.04+，请以 **root** 用户在 VPS 的交互式终端中运行。DE 版推荐 Debian 13。
 
-运行前请确认已安装 `curl`，并备份重要数据和现有配置。脚本会更新系统、调整网络参数并配置相关服务。
+运行前请确认已安装 `curl`，并备份重要数据和现有配置。完整初始化会更新系统、调整网络参数并配置相关服务；其他模式的范围见下表。
 
 ## 推荐：单文件整合入口
 
@@ -28,16 +28,35 @@ bash vps-init.sh
 
 | 序号 | 场景 | 自动执行的场景步骤 |
 | --- | --- | --- |
-| 1 | HK / JP 低延迟精品线路 | 低延迟 TCP 参数、fail2ban、iperf3 |
-| 2 | LA 等高延迟跨洲线路 | 高延迟 TCP 参数、fail2ban、iperf3 |
-| 3 | DE / 法兰克福 | DE 专用 TCP 参数、fail2ban、iperf3 |
-| 4 | 精简基础版 | 低延迟 TCP 参数、fail2ban、iperf3，无 sing-box / NextTrace |
-| 5 | 国内自托管服务 | Docker / Compose、NPM、Watchtower，以及选中的服务组 |
+| 1 | HK / JP 低延迟精品线路 | 低延迟 TCP 参数、fail2ban；工具及常驻服务另选 |
+| 2 | LA 等高延迟跨洲线路 | 高延迟 TCP 参数、fail2ban；工具及常驻服务另选 |
+| 3 | DE / 法兰克福 | DE 专用 TCP 参数、fail2ban；工具及常驻服务另选 |
+| 4 | 精简基础版 | 低延迟 TCP 参数、fail2ban，无 sing-box / NextTrace；iperf3 另选 |
+| 5 | 国内自托管服务 | Docker / Compose、NPM，以及选中的服务组；Watchtower 另选 |
 | 0 | 退出 | 不修改系统 |
 
-所有场景共用主机名配置（可跳过）、APT 索引更新与系统升级、基础工具、Starship、自动安全更新和 journald 100M 日志限制。这些公共步骤每次运行只执行一次；场景所需软件包按需安装。
+先选择运行模式，再选择场景和组件：
 
-选择场景 1–3 后，再输入境外组件序号：`0` 均不安装、`1` NextTrace（默认）、`2` sing-box、`3` 两者都安装。只有选择 sing-box 时才处理其安装和自动更新任务；第三方安装器可能仍有自身交互。
+| 模式序号 | `VPS_MODE` | 操作范围 |
+| --- | --- | --- |
+| 1 | `full`（默认） | 完整初始化：主机名、APT 更新/升级、基础工具、Starship、安全更新、日志限制，以及场景步骤 |
+| 2 | `components` | 仅安装所选组件及其依赖；更新 APT 索引，但强制跳过系统升级，不改主机名、Starship、安全策略或 TCP 参数 |
+| 3 | `status` | 只读检查现有服务；不安装依赖、不创建令牌文件或改权限；国内场景按所选服务验收 |
+| 4 | `update` | 国内复用已有 Compose、拉取并启动所选服务；境外对已安装的所选 NextTrace 重新运行原安装器，对 sb 执行脚本/内核更新；不重新初始化系统或设置定时任务 |
+
+完整初始化的公共步骤每次只执行一次；配置内容一致时不重复备份、写入或重启服务。补装工具建议选模式 `2`，查看状态选 `3`，主动升级服务选 `4`。普通安装模式不再主动拉取已有服务的新镜像，缺失镜像仍由 Compose 按其策略拉取。
+
+选择场景 1–3 后，再输入境外组件序号：`0` 均不安装、`1` NextTrace（默认）、`2` sing-box、`3` 两者都安装。安装 sing-box 与启用其定时更新分别选择；第三方安装器可能仍有自身交互。所选安装失败或安装后未检测到命令时返回失败。
+
+完整初始化和组件模式还会分别询问后台任务：
+
+| 变量 | 对应任务 | 选项 |
+| --- | --- | --- |
+| `IPERF3_ACTION` | 境外 iperf3 常驻服务 | `0` 保持现状（默认）、`1` 安装并启用、`2` 停止并取消开机启动 |
+| `WATCHTOWER_ACTION` | 国内 Watchtower 自动更新 | `0` 保持现状（默认）、`1` 纳入启动服务、`2` 停止现有 Watchtower 容器 |
+| `SB_UPDATE_ACTION` | sing-box 每日定时更新 | `0` 保持现状（默认）、`1` 配置并启用、`2` 移除该更新任务，保留其他 cron 条目 |
+
+`0` 在新机器上不会启用这些后台任务，已有机器则保留原状态；要关闭以前已启用的任务，需要明确选择 `2`。检查/更新模式要求这些 ACTION 均为 `0`，启停操作使用组件模式。启用 sing-box 定时更新需要已有 `/usr/local/bin/sb`，也可同时选择安装 sing-box。iperf3 默认端口 `5201` 且无身份认证，启用后应仅向可信 IP 放行。
 
 选择场景 5 后，可按以下序号选择服务组，多个序号用逗号分隔，例如 `1,4,6`：
 
@@ -51,16 +70,18 @@ bash vps-init.sh
 | 6 | monitoring | Uptime Kuma、Beszel |
 | 7 | notes | Memos |
 | 8 | all | 全部可选服务 |
-| 0 | none | 仅 NPM + Watchtower（默认） |
+| 0 | none | 仅 NPM（默认，Watchtower 独立选择） |
 
 整合版与旧版的差异：
 
 - 国内服务从默认全部启动改为默认仅基础组件，按需选择其余服务。只有选中 `tools` 时才要求输入 Homepage 域名。
 - Docker 镜像站由部署者通过 `DOCKER_MIRRORS` 提供可信地址，整合版不内置第三方镜像站；未设置时保留已有镜像站，新安装则使用原始镜像源。
 - 四个境外场景统一按参数逐项探测可用性，未暴露或不可写的 TCP 参数会提示并跳过。HK / 精简版保留 16 MiB 缓冲上限，LA / DE 保留 32 MiB；DE 保留原有的发送缓冲默认值及专用参数。32 MiB 是自动调节上限，并非预分配内存。
-- 已有系统配置在覆盖前备份；Docker daemon 仍先合并、校验，重启失败回滚。Compose 使用候选文件先校验，再备份并替换原文件；它不会自动合并手工修改的 Compose，请核对备份。
+- fail2ban、Docker daemon、安全更新 drop-in 和 journald 使用配置事务：只备份发生变化的文件；校验失败恢复原文件，启动失败还尝试恢复服务原有运行状态。自动安全更新不再覆盖现有 `20auto-upgrades` 和 `50unattended-upgrades`；只有缺少传统周期配置时才维护独立 `20vps-auto-upgrades`，更新来源、清理和自动重启策略沿用现有配置。
+- Compose 使用候选文件先校验，内容有变化才备份替换；启动验收失败时恢复原 Compose 并尝试恢复原服务配置。首次部署失败会撤回新 Compose，保留容器供排查。恢复不包含服务数据或镜像版本回退；不会自动合并手工修改的 Compose，请核对备份。
+- 国内服务根据当前选择逐一验收，默认最多等待 120 秒；缺少容器、退出、重启中、不健康或状态读取失败均返回失败。有健康检查的容器必须为 `healthy`，没有健康检查时仅确认进程为 `running`，会明确标注，不表示应用接口已可用。多副本需全部满足条件。
 - NextTrace / sing-box 安装器先完整下载并通过 Bash 语法检查，再执行；语法检查不代表远程代码可信。未固定第三方安装器及容器镜像版本，内容可能随上游更新变化。
-- 不选择某个组件只影响本次安装，不会卸载已有组件、停止已有容器或删除旧定时任务。切换服务选择并不等于移除上一次部署的服务。
+- 不选择某个组件不会卸载或删除它；切换服务组也不等于移除上次部署的服务。后台任务选择 `0` 同样保留现状，选择 `2` 才执行对应停用操作。
 - 检查 Debian 11+ / Ubuntu 22.04+ 及运行中的 systemd；受限容器兼容仅指 TCP 参数跳过，服务部署仍需要 systemd。无终端时必须显式提供场景。
 
 ### 环境变量与无人值守选择
@@ -69,6 +90,7 @@ bash vps-init.sh
 
 | 环境变量 | 用途与默认值 |
 | --- | --- |
+| `VPS_MODE` | `1`–`4` 或 `full` / `components` / `status` / `update`，默认 `full` |
 | `VPS_SCENE` | `1`–`5`，也接受 `hk` / `la` / `de` / `minimal` / `domestic`；必须选择 |
 | `VPS_COMPONENTS` | 场景 1–3 的工具序号 `0`–`3`，默认 `1`；精简/国内固定为 `0` |
 | `SERVICE_PROFILES` | 国内服务序号或名称，例如 `1,4,6` 或 `tools,rss,monitoring`；默认 `0`，全部用 `8` / `all` |
@@ -77,6 +99,8 @@ bash vps-init.sh
 | `INSTALL_STARSHIP` | 默认 `1`；`0` 跳过 Starship |
 | `RESET_STARSHIP_CONFIG` | 默认 `0` 保留已有主题；`1` 备份后重置 |
 | `IPERF3_PORT` | 境外场景默认 `5201`，范围 1024–65535 |
+| `IPERF3_ACTION` / `WATCHTOWER_ACTION` / `SB_UPDATE_ACTION` | 分别控制对应后台任务，`0` 保持（默认）、`1` 启用、`2` 停用 |
+| `SERVICE_WAIT_TIMEOUT` | 国内服务启动验收等待秒数，默认 `120`，范围 1–3600；状态检查立即报告结果 |
 | `HOMEPAGE_HOST` | 选中 `tools` 时必须提供或交互输入有效 DNS 域名 |
 | `STACK_DIR` | 国内部署目录，默认 `/opt/stacks`，必须是非根目录的绝对路径 |
 | `DOCKER_MIRRORS` | Docker 镜像站 JSON 数组，例如 `'["https://mirror.example.com"]'`；默认 `[]`，不改已有镜像站 |
@@ -87,6 +111,15 @@ VPS_SCENE=3 VPS_COMPONENTS=1 bash vps-init.sh --plan
 
 # 国内：仅部署 RSS 和监控组，不需要 Homepage 域名；先只预览
 VPS_SCENE=5 SERVICE_PROFILES=4,6 bash vps-init.sh --plan
+
+# 仅补装 NextTrace，同时启用 iperf3，不执行全系统升级；先预览
+VPS_MODE=components VPS_SCENE=1 VPS_COMPONENTS=1 IPERF3_ACTION=1 bash vps-init.sh --plan
+
+# 查看现有 RSS 服务组的状态（目标 VPS 上运行）
+VPS_MODE=status VPS_SCENE=5 SERVICE_PROFILES=4 bash vps-init.sh
+
+# 复用已有配置，更新 RSS 服务组；先预览
+VPS_MODE=update VPS_SCENE=5 SERVICE_PROFILES=4 bash vps-init.sh --plan
 
 # 正式执行时去掉 --plan；请在目标 VPS 上以 root 运行
 ```
@@ -182,9 +215,10 @@ bash overseas-vps-init.sh
 bash tests/starship-config-test.sh
 bash tests/system-update-test.sh
 bash tests/unified-init-test.sh
+bash tests/reliability-test.sh
 ```
 
-新增隔离测试覆盖整合入口的五种场景调度、菜单序号映射、公共步骤只执行一次、只读预览、TCP 参数差异及受限内核跳过、Compose 令牌复用和校验失败保留原配置，以及第三方安装器下载失败/语法错误拦截。Docker / systemd / sysctl 等操作使用替身，不能替代真实 Debian / Ubuntu 隔离环境中的部署验收。
+新增隔离测试覆盖五种场景和四种模式、菜单映射、公共步骤只执行一次、只读预览、TCP 差异、Compose 令牌复用与失败恢复、后台任务独立启停、健康状态解析、无变化跳过及原有自动更新策略保留。Docker / systemd / sysctl 等操作使用替身，不能替代真实 Debian / Ubuntu 隔离环境中的部署验收。
 
 ## 国内 VPS 数据与凭据
 

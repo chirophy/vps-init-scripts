@@ -8,6 +8,9 @@ fail() { printf '[FAIL] %s\n' "$*" >&2; exit 1; }
 # shellcheck disable=SC1091
 source "$project_dir/vps-init.sh"
 read_tty() { printf -v "$1" '%s' "${3-}"; }
+if ! python3 -c 'import sys' >/dev/null 2>&1; then python3() { python "$@"; }; fi
+VPS_MODE=full
+IPERF3_ACTION=0 WATCHTOWER_ACTION=0 SB_UPDATE_ACTION=0 SERVICE_WAIT_TIMEOUT=1
 
 # 菜单、默认值、序号与兼容名称、非法值均在任何系统操作前处理。
 for selection in 1 2 3 4 5 hk la de minimal domestic; do
@@ -51,7 +54,7 @@ for scene in 1 2 3 4 5; do
         systemctl() { printf 'active\n'; }
         VPS_SCENE=$scene
         unset VPS_COMPONENTS SERVICE_PROFILES
-        if [[ "$scene" == 1 ]]; then VPS_COMPONENTS=3; fi
+        if [[ "$scene" == 1 ]]; then VPS_COMPONENTS=3; SB_UPDATE_ACTION=1; IPERF3_ACTION=1; fi
         : > "$test_dir/calls"
         main --plan > "$test_dir/plan"
         [[ ! -s "$test_dir/calls" ]] || fail '--plan 触发了系统步骤'
@@ -135,7 +138,7 @@ printf '[PASS] TCP 场景差异、部分失败、全部受限及配置保留\n'
     STACK_DIR="$test_dir/stacks"
     SERVICE_PROFILES=4 select_services > "$test_dir/plan"
     HOMEPAGE_HOST=nav.example.com
-    compose_ok=1
+    compose_ok=1 up_fail_once=0
     docker() {
         if [[ "$1" == --version ]]; then printf 'Docker version mock\n'; return 0; fi
         if [[ "$*" == 'compose version --short' ]]; then printf 'mock\n'; return 0; fi
@@ -143,8 +146,13 @@ printf '[PASS] TCP 场景差异、部分失败、全部受限及配置保留\n'
         if [[ "$*" == *'config -q'* ]]; then
             [[ "$*" == *'--profile rss'* ]] || fail '校验未使用所选 profiles'
             [[ "$compose_ok" == 1 ]]
-        elif [[ "$*" == *'ps -a'* ]]; then
-            printf 'npm running\nwatchtower running\n'
+        elif [[ "$*" == *'config --services'* ]]; then
+            printf 'nginx-proxy-manager\nrsshub\nredis\nbrowserless\n'
+        elif [[ "$*" == *'ps --all --format json'* ]]; then
+            printf '[{"Service":"nginx-proxy-manager","State":"running"},{"Service":"rsshub","State":"running","Health":"healthy"},{"Service":"redis","State":"running","Health":"healthy"},{"Service":"browserless","State":"running"}]\n'
+        elif [[ "$*" == *'up -d'* && "$up_fail_once" == 1 ]]; then
+            up_fail_once=0
+            return 1
         fi
     }
     sleep() { :; }
@@ -154,13 +162,19 @@ printf '[PASS] TCP 场景差异、部分失败、全部受限及配置保留\n'
     grep -qxE 'BROWSERLESS_TOKEN=[0-9a-f]{64}' "$test_dir/token-before" || fail '令牌生成错误'
     deploy_services > "$test_dir/compose"
     cmp -s "$STACK_DIR/.browserless.env" "$test_dir/token-before" || fail '重跑未复用令牌'
+    [[ $(find "$STACK_DIR" -maxdepth 1 -name 'docker-compose.yml.bak.*' | wc -l) == 0 ]] || fail '相同 Compose 产生了备份'
     cp "$STACK_DIR/docker-compose.yml" "$test_dir/compose-before"
     if (compose_ok=0; deploy_services) > "$test_dir/error" 2>&1; then fail '无效 Compose 未停止部署'; fi
     cmp -s "$STACK_DIR/docker-compose.yml" "$test_dir/compose-before" || fail '校验失败覆盖了原 Compose'
+    printf '# existing custom config\n' >> "$STACK_DIR/docker-compose.yml"
+    cp "$STACK_DIR/docker-compose.yml" "$test_dir/custom-compose"
+    if (up_fail_once=1; deploy_services) > "$test_dir/error" 2>&1; then fail '启动失败没有返回失败'; fi
+    cmp -s "$STACK_DIR/docker-compose.yml" "$test_dir/custom-compose" || fail '启动失败未恢复原 Compose'
+    grep -q '原 Compose 对应的服务已恢复' "$test_dir/error" || fail '未验证恢复原服务配置'
     printf 'invalid\n' > "$STACK_DIR/.browserless.env"
     if (deploy_services) > "$test_dir/error" 2>&1; then fail '接受畸形令牌'; fi
 )
-printf '[PASS] Compose 令牌复用、profile 参数、候选文件校验与失败保留\n'
+printf '[PASS] Compose 令牌复用、无变化跳过、校验/启动失败恢复及恢复服务验收\n'
 
 # 下载失败即使写出部分脚本，也不能执行；语法错误同样必须阻止执行。
 (

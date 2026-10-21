@@ -244,8 +244,36 @@ require_choice() {
     fi
 }
 
+select_mode() {
+    echo '运行模式：1) 完整初始化  2) 仅安装组件  3) 检查状态  4) 更新已部署组件/服务'
+    require_choice VPS_MODE '请输入模式序号（默认 1）: ' 1
+    case "$VPS_MODE" in
+        1|full) VPS_MODE=full ;;
+        2|components) VPS_MODE=components ;;
+        3|status) VPS_MODE=status ;;
+        4|update) VPS_MODE=update ;;
+        *) die '模式无效：请输入 1-4 或 full/components/status/update' ;;
+    esac
+}
+
+# 0 保持已有状态（新机器默认不启用），1 启用，2 停用；安装与自动更新分开选择。
+
+select_background_actions() {
+    if [[ "$VPS_MODE" == full || "$VPS_MODE" == components ]]; then
+        if [[ "$VPS_SCENE" == domestic ]]; then
+            require_choice WATCHTOWER_ACTION 'Watchtower 自动更新：0) 保持现状  1) 启用  2) 停用（默认 0）: ' 0
+        else
+            require_choice IPERF3_ACTION 'iperf3 常驻：0) 保持现状  1) 启用  2) 停用（默认 0）: ' 0
+            require_choice SB_UPDATE_ACTION 'sing-box 定时更新：0) 保持现状  1) 启用  2) 停用（默认 0）: ' 0
+        fi
+    fi
+    IPERF3_ACTION=${IPERF3_ACTION:-0}
+    WATCHTOWER_ACTION=${WATCHTOWER_ACTION:-0}
+    SB_UPDATE_ACTION=${SB_UPDATE_ACTION:-0}
+}
+
 select_scene() {
-    echo '请选择初始化场景：'
+    echo '请选择场景：'
     echo '  1) HK / JP 低延迟精品线路'
     echo '  2) LA 等高延迟、长距离大带宽线路'
     echo '  3) DE / 法兰克福线路（保留专用 TCP 参数）'
@@ -265,11 +293,15 @@ select_scene() {
 }
 
 select_components() {
+    if [[ "${VPS_MODE:-full}" == status ]]; then
+        VPS_COMPONENTS=0 INSTALL_NEXTTRACE=0 INSTALL_SING_BOX=0
+        return 0
+    fi
     if [[ "$VPS_SCENE" == minimal || "$VPS_SCENE" == domestic ]]; then
         [[ "${VPS_COMPONENTS:-0}" == 0 ]] || die '精简版和国内版不支持 VPS_COMPONENTS；境外工具请选择场景 1-3'
         VPS_COMPONENTS=0
     else
-        echo '境外可选组件：0) 均不安装  1) NextTrace  2) sing-box  3) 两者都安装'
+        echo '境外组件：0) 均不选择  1) NextTrace  2) sing-box  3) 两者都选择'
         require_choice VPS_COMPONENTS '请输入组件序号（默认 1）: ' 1
         case "$VPS_COMPONENTS" in 0|1|2|3) ;; *) die '组件序号必须为 0-3' ;; esac
     fi
@@ -289,7 +321,7 @@ select_services() {
     SELECTED_PROFILE_NAMES=()
     local profile selection item
     local -a requested=()
-    echo '国内可选服务（NPM + Watchtower 始终部署）：'
+    echo '国内服务组（NPM 为基础服务，Watchtower 在安装模式中另选）：'
     echo '  1) Homepage + IT-Tools   2) Gitea   3) Navidrome + MeTube'
     echo '  4) RSSHub + Browserless + Redis   5) File Browser + OpenList'
     echo '  6) Uptime Kuma + Beszel   7) Memos   8) 全部   0) 仅基础组件'
@@ -318,6 +350,9 @@ select_services() {
             COMPOSE_PROFILE_ARGS+=(--profile "$profile")
         fi
     done
+    if [[ "${WATCHTOWER_ACTION:-0}" == 1 ]]; then
+        COMPOSE_PROFILE_ARGS+=(--profile watchtower)
+    fi
 }
 
 validate_options() {
@@ -325,6 +360,14 @@ validate_options() {
     for variable in UPGRADE_SYSTEM INSTALL_STARSHIP RESET_STARSHIP_CONFIG; do
         case "${!variable:-0}" in 0|1) ;; *) die "$variable 仅支持 0 或 1" ;; esac
     done
+    for variable in IPERF3_ACTION WATCHTOWER_ACTION SB_UPDATE_ACTION; do
+        case "${!variable:-0}" in 0|1|2) ;; *) die "$variable 仅支持 0/1/2（保持/启用/停用）" ;; esac
+        if [[ "${VPS_MODE:-full}" == status || "${VPS_MODE:-full}" == update ]]; then
+            [[ "${!variable:-0}" == 0 ]] || die '检查/更新模式不调整后台策略，请将 ACTION 设为 0，启停请使用组件模式'
+        fi
+    done
+    SERVICE_WAIT_TIMEOUT=${SERVICE_WAIT_TIMEOUT:-120}
+    [[ "$SERVICE_WAIT_TIMEOUT" =~ ^[1-9][0-9]{0,3}$ ]] && (( SERVICE_WAIT_TIMEOUT <= 3600 )) || die 'SERVICE_WAIT_TIMEOUT 必须为 1-3600 秒'
     if [[ "$VPS_SCENE" != domestic ]]; then
         IPERF3_PORT=${IPERF3_PORT:-5201}
         [[ "$IPERF3_PORT" =~ ^[1-9][0-9]{3,4}$ ]] && (( IPERF3_PORT >= 1024 && IPERF3_PORT <= 65535 )) || die 'IPERF3_PORT 必须是 1024-65535 的整数'
@@ -338,13 +381,20 @@ validate_options() {
 print_plan() {
     step '执行方案'
     info "场景：$SCENE_NAME"
-    info "公共步骤：主机名（可跳过）、APT 更新（系统升级=${UPGRADE_SYSTEM:-1}）、Starship=${INSTALL_STARSHIP:-1}、自动安全更新、journald 100M"
+    info "模式：${VPS_MODE:-full}；0=保持现状，1=启用，2=停用"
+    if [[ "${VPS_MODE:-full}" == full ]]; then
+        info "公共步骤：主机名（可跳过）、APT 更新（系统升级=${UPGRADE_SYSTEM:-1}）、Starship=${INSTALL_STARSHIP:-1}、自动安全更新、journald 100M"
+    elif [[ "$VPS_MODE" == components ]]; then
+        info '仅安装所选组件及依赖，不升级系统，不修改主机名、安全策略或 TCP 参数'
+    else
+        info '复用已有配置；检查模式只读，更新模式仅更新选择的已部署组件/服务'
+    fi
     if [[ "$VPS_SCENE" == domestic ]]; then
-        info "Docker / Compose；基础服务 NPM + Watchtower；可选服务：${SELECTED_PROFILE_NAMES[*]:-无}"
+        info "Docker / Compose；基础服务 NPM；可选服务：${SELECTED_PROFILE_NAMES[*]:-无}；Watchtower=$WATCHTOWER_ACTION"
         info "服务目录：$STACK_DIR"
     else
-        info "TCP 参数方案：$VPS_SCENE；fail2ban；iperf3 端口：$IPERF3_PORT"
-        info "安装 NextTrace=$INSTALL_NEXTTRACE，安装 sing-box 及配置其自动更新=$INSTALL_SING_BOX"
+        info "TCP 参数方案：$VPS_SCENE；fail2ban；iperf3=$IPERF3_ACTION（端口 $IPERF3_PORT）"
+        info "安装 NextTrace=$INSTALL_NEXTTRACE，安装 sing-box=$INSTALL_SING_BOX，定时更新=$SB_UPDATE_ACTION"
     fi
     info '未选择的组件不新装、不卸载，已有服务和定时任务不会因此被移除。'
 }
@@ -390,6 +440,91 @@ backup_file() {
     fi
 }
 
+# 多文件事务：只有内容改变才备份和写入；校验或启动失败时恢复文件及服务原状态。
+apply_service_files() {
+    local service=$1 validator=$2 enable_service=$3
+    shift 3
+    local candidate target backup index original_active=0 changed=0
+    local -a targets=() backups=()
+    systemctl is-active --quiet "$service" && original_active=1
+    while (( $# )); do
+        candidate=$1 target=$2; shift 2
+        if cmp -s -- "$candidate" "$target"; then
+            rm -f -- "$candidate"
+            continue
+        fi
+        backup=''
+        if [[ -e "$target" ]]; then
+            backup=$(mktemp "${target}.bak.$(date +%Y%m%d%H%M%S).XXXXXX") || return 1
+            cp -a -- "$target" "$backup" || return 1
+        fi
+        targets+=("$target"); backups+=("$backup")
+        if ! install -m 0644 -- "$candidate" "$target"; then
+            rm -f -- "$candidate"
+            restore_service_files
+            return 1
+        fi
+        rm -f -- "$candidate"
+        changed=1
+    done
+    if ! "$validator"; then
+        error "$service 配置校验失败，恢复本次修改"
+        restore_service_files
+        return 1
+    fi
+    if (( changed == 1 || original_active == 0 )); then
+        if [[ "$service" == iperf3-server.service ]]; then systemctl daemon-reload || { restore_service_files; return 1; }; fi
+        if ! systemctl restart "$service" || ! systemctl is-active --quiet "$service"; then
+            error "$service 启动失败，恢复原配置和运行状态"
+            restore_service_files
+            if (( original_active )); then
+                if ! systemctl restart "$service" || ! systemctl is-active --quiet "$service"; then
+                    error "$service 原配置已恢复，但服务恢复失败，请检查 journalctl -u $service"
+                fi
+            else
+                systemctl stop "$service" || error "$service 停止失败，请手动检查"
+            fi
+            return 1
+        fi
+    else
+        info "$service 配置未变化且已运行，跳过备份、写入和重启"
+    fi
+    if [[ "$enable_service" == 1 ]] && ! systemctl is-enabled --quiet "$service"; then
+        systemctl enable "$service" || return 1
+    fi
+}
+
+# 使用 apply_service_files 的局部数组（Bash 动态作用域），不接触未纳入事务的文件。
+restore_service_files() {
+    local index failed=0
+    for ((index=${#targets[@]}-1; index>=0; index--)); do
+        if [[ -n "${backups[index]}" ]]; then
+            cp -a -- "${backups[index]}" "${targets[index]}" || failed=1
+        else
+            rm -f -- "${targets[index]}" || failed=1
+        fi
+    done
+    [[ "$service" != iperf3-server.service ]] || systemctl daemon-reload || failed=1
+    (( failed == 0 )) || error '部分配置恢复失败，请使用保留的 .bak 文件人工恢复'
+    return "$failed"
+}
+
+validate_none() { :; }
+validate_fail2ban() { fail2ban-client -t; }
+validate_apt() { apt-config dump >/dev/null; }
+validate_docker() { dockerd --validate --config-file /etc/docker/daemon.json; }
+
+install_file_if_changed() {
+    local candidate=$1 target=$2 mode=${3:-0644}
+    FILE_CHANGED=0
+    if ! cmp -s -- "$candidate" "$target"; then
+        backup_file "$target" || return 1
+        install -m "$mode" -- "$candidate" "$target" || return 1
+        FILE_CHANGED=1
+    fi
+    rm -f -- "$candidate"
+}
+
 configure_hostname() {
 step "修改主机名"
 [[ -n "$NEW_HOSTNAME" ]] || { info "跳过主机名修改"; return 0; }
@@ -399,25 +534,29 @@ step "修改主机名"
         HOSTS_NAMES+=" $SHORT_HOSTNAME"
     fi
 
-    if [[ -f /etc/hosts ]]; then
-        cp -a /etc/hosts "/etc/hosts.bak.$(date +%Y%m%d%H%M%S)"
+    if [[ "$(hostname)" != "$NEW_HOSTNAME" ]]; then
+        backup_file /etc/hostname
+        hostnamectl set-hostname "$NEW_HOSTNAME"
     fi
-    backup_file /etc/hostname
-    backup_file /etc/cloud/cloud.cfg.d/99-vps-preserve-hostname.cfg
-    hostnamectl set-hostname "$NEW_HOSTNAME"
+    local candidate
 
     # 防止云镜像的 cloud-init 在重启后恢复云厂商下发的旧主机名。
     if command -v cloud-init &>/dev/null; then
         install -d -m 0755 /etc/cloud/cloud.cfg.d
-        printf 'preserve_hostname: true\n' > /etc/cloud/cloud.cfg.d/99-vps-preserve-hostname.cfg
+        candidate=$(mktemp /etc/cloud/cloud.cfg.d/.vps-hostname.XXXXXX)
+        printf 'preserve_hostname: true\n' > "$candidate"
+        install_file_if_changed "$candidate" /etc/cloud/cloud.cfg.d/99-vps-preserve-hostname.cfg
     fi
 
     # FQDN 在前、短主机名在后，避免 sudo 报 "unable to resolve host"。
+    candidate=$(mktemp /etc/.vps-hosts.XXXXXX)
     if grep -q '^127\.0\.1\.1' /etc/hosts; then
-        sed -i "s/^127\.0\.1\.1.*/127.0.1.1\t${HOSTS_NAMES}/" /etc/hosts
+        sed "s/^127\.0\.1\.1.*/127.0.1.1\t${HOSTS_NAMES}/" /etc/hosts > "$candidate"
     else
-        printf '127.0.1.1\t%s\n' "$HOSTS_NAMES" >> /etc/hosts
+        cat /etc/hosts > "$candidate"
+        printf '127.0.1.1\t%s\n' "$HOSTS_NAMES" >> "$candidate"
     fi
+    install_file_if_changed "$candidate" /etc/hosts
     info "主机名已设置为: $NEW_HOSTNAME（/etc/hosts 已同步）"
 }
 
@@ -445,11 +584,14 @@ else
     info "已通过 UPGRADE_SYSTEM=0 跳过系统升级，仍更新索引并安装所需工具"
 fi
 # ---------- 系统升级处理结束 ----------
-apt-get install -y curl wget ca-certificates tar unattended-upgrades
+apt-get install -y curl wget ca-certificates tar
+if [[ "${VPS_MODE:-full}" == full ]]; then apt-get install -y unattended-upgrades; fi
 if [[ "$VPS_SCENE" == domestic ]]; then
-    apt-get install -y gnupg jq
+    apt-get install -y gnupg jq python3
 else
-    apt-get install -y fail2ban python3-systemd iperf3 cron kmod
+    if [[ "${VPS_MODE:-full}" == full ]]; then apt-get install -y fail2ban python3-systemd kmod; fi
+    if [[ "${IPERF3_ACTION:-0}" == 1 ]]; then apt-get install -y iperf3; fi
+    if [[ "${SB_UPDATE_ACTION:-0}" == 1 ]]; then apt-get install -y cron; fi
 fi
 info "系统更新及基础工具安装完成"
 }
@@ -467,7 +609,10 @@ if grep -qw bbr <<< "$AVAILABLE_CC"; then
     TCP_CC="bbr"
     if modinfo tcp_bbr &>/dev/null; then
         install -d -m 0755 /etc/modules-load.d
-        printf '%s\n' tcp_bbr > /etc/modules-load.d/99-vps-bbr.conf
+        local module_candidate
+        module_candidate=$(mktemp /etc/modules-load.d/.vps-bbr.XXXXXX)
+        printf '%s\n' tcp_bbr > "$module_candidate"
+        install_file_if_changed "$module_candidate" /etc/modules-load.d/99-vps-bbr.conf
     fi
 elif [[ -n "$CURRENT_CC" ]]; then
     TCP_CC="$CURRENT_CC"
@@ -479,7 +624,6 @@ fi
 
 install -d -m 0755 /etc/sysctl.d
 SYSCTL_TARGET=/etc/sysctl.d/99-vps-tuning.conf
-backup_file "$SYSCTL_TARGET"
 SYSCTL_FILE=$(mktemp /etc/sysctl.d/.vps-tuning.XXXXXX)
 APPLIED_SYSCTL_KEYS=()
 APPLIED_SYSCTL_COUNT=0
@@ -563,8 +707,7 @@ if (( APPLIED_SYSCTL_COUNT == 0 )); then
     rm -f "$SYSCTL_FILE"
     warn "宿主机禁止修改全部目标参数，已跳过 TCP 调优并继续后续初始化"
 else
-    chmod 0644 "$SYSCTL_FILE"
-    mv -f -- "$SYSCTL_FILE" "$SYSCTL_TARGET"
+    install_file_if_changed "$SYSCTL_FILE" "$SYSCTL_TARGET"
     SYSCTL_FILE=$SYSCTL_TARGET
     info "TCP 调优已应用 $APPLIED_SYSCTL_COUNT 项，跳过 $SKIPPED_SYSCTL_COUNT 项"
     info "仅将成功参数写入 $SYSCTL_FILE"
@@ -606,8 +749,9 @@ if [[ ! "$IPERF3_PORT" =~ ^[1-9][0-9]{3,4}$ ]] || (( IPERF3_PORT < 1024 || IPERF
     exit 1
 fi
 
-backup_file /etc/systemd/system/iperf3-server.service
-cat > /etc/systemd/system/iperf3-server.service << EOF
+local candidate
+candidate=$(mktemp /etc/systemd/system/.iperf3.XXXXXX)
+cat > "$candidate" << EOF
 [Unit]
 Description=iperf3 Network Performance Test Server
 Documentation=man:iperf3(1)
@@ -637,13 +781,7 @@ AmbientCapabilities=
 WantedBy=multi-user.target
 EOF
 
-systemctl daemon-reload
-systemctl enable iperf3-server.service
-if ! systemctl restart iperf3-server.service || ! systemctl is-active --quiet iperf3-server.service; then
-    error "iperf3 服务启动失败，端口 $IPERF3_PORT 可能已被占用"
-    systemctl status iperf3-server.service --no-pager || true
-    exit 1
-fi
+apply_service_files iperf3-server.service validate_none 1 "$candidate" /etc/systemd/system/iperf3-server.service || return 1
 info "iperf3 已在后台运行并设置为开机自启（端口: $IPERF3_PORT）"
 warn "iperf3 默认无身份认证，请仅向可信 IP 开放 TCP/UDP $IPERF3_PORT"
 }
@@ -655,12 +793,14 @@ if command -v nexttrace &>/dev/null || command -v nxtrace &>/dev/null; then
     warn "NextTrace 已安装，跳过"
 else
     run_installer https://nxtrace.org/nt || {
-        warn "NextTrace 安装脚本退出码非零，请稍后手动安装"
+        error "NextTrace 安装器失败"
+        return 1
     }
     if command -v nexttrace &>/dev/null || command -v nxtrace &>/dev/null; then
         info "NextTrace 安装完成"
     else
-        warn "NextTrace 未检测到"
+        error "NextTrace 未检测到，所选安装未完成"
+        return 1
     fi
 fi
 }
@@ -673,12 +813,14 @@ if command -v sing-box &>/dev/null || [[ -f /usr/local/bin/sb ]]; then
     warn "sing-box 已安装 (${SB_VER})，跳过"
 else
     run_installer https://github.com/233boy/sing-box/raw/main/install.sh || {
-        warn "sing-box 安装脚本退出码非零（可能是用户取消），继续执行后续步骤"
+        error "sing-box 安装器失败或被取消"
+        return 1
     }
     if command -v sing-box &>/dev/null; then
         info "sing-box 安装完成"
     else
-        warn "sing-box 未检测到，请稍后手动安装"
+        error "sing-box 未检测到，所选安装未完成"
+        return 1
     fi
 fi
 }
@@ -690,8 +832,10 @@ step "配置 fail2ban"
 install -d -m 0755 /etc/fail2ban/jail.d /etc/fail2ban/fail2ban.d
 
 # 使用最后加载的 .local drop-in，不覆盖用户已有 jail.local；已有 ignoreip 也会保留。
-backup_file /etc/fail2ban/jail.d/99-vps-sshd.local
-cat > /etc/fail2ban/jail.d/99-vps-sshd.local << 'EOF'
+local jail_candidate db_candidate
+jail_candidate=$(mktemp /etc/fail2ban/jail.d/.vps-jail.XXXXXX)
+db_candidate=$(mktemp /etc/fail2ban/fail2ban.d/.vps-db.XXXXXX)
+cat > "$jail_candidate" << 'EOF'
 [DEFAULT]
 ignoreself = true
 usedns = no
@@ -712,22 +856,14 @@ banaction = %(banaction_allports)s
 EOF
 
 # 数据库保留 30 天，足以支持递增封禁，同时避免永久增长。
-backup_file /etc/fail2ban/fail2ban.d/99-vps-local.local
-cat > /etc/fail2ban/fail2ban.d/99-vps-local.local << 'EOF'
+cat > "$db_candidate" << 'EOF'
 [Definition]
 dbpurgeage = 2592000
 EOF
 
-if ! fail2ban-client -t; then
-    error "fail2ban 配置校验失败，未重启服务"
-    exit 1
-fi
-systemctl enable fail2ban
-if ! systemctl restart fail2ban || ! systemctl is-active --quiet fail2ban; then
-    error "fail2ban 启动失败，安全防护未生效"
-    systemctl status fail2ban --no-pager || true
-    exit 1
-fi
+apply_service_files fail2ban validate_fail2ban 1 \
+    "$jail_candidate" /etc/fail2ban/jail.d/99-vps-sshd.local \
+    "$db_candidate" /etc/fail2ban/fail2ban.d/99-vps-local.local || return 1
 info "fail2ban 已配置并启动（SSH 递增封禁，最长 7 天）"
 }
 
@@ -736,8 +872,9 @@ configure_sb_update() {
 step "构建 sing-box 自动更新脚本"
 
 if [[ -f /usr/local/bin/sb ]]; then
-    backup_file /usr/local/bin/sb-auto-update.sh
-    cat > /usr/local/bin/sb-auto-update.sh << 'SCRIPT_EOF'
+    local candidate
+    candidate=$(mktemp /usr/local/bin/.sb-update.XXXXXX)
+    cat > "$candidate" << 'SCRIPT_EOF'
 #!/bin/bash
 set -uo pipefail
 
@@ -803,58 +940,42 @@ log "========== 更新完成 =========="
 echo "" >> "$LOG_FILE"
 SCRIPT_EOF
 
-    chmod +x /usr/local/bin/sb-auto-update.sh
+    install_file_if_changed "$candidate" /usr/local/bin/sb-auto-update.sh 0755
 
-    # 非交互式写入 crontab（幂等：先删旧条目再添加）
-    EXISTING_CRON=$(crontab -l 2>/dev/null | grep -v 'sb-auto-update' || true)
-    echo "${EXISTING_CRON}
-0 4 * * * /usr/local/bin/sb-auto-update.sh" | crontab -
-
-    systemctl enable --now cron
+    set_sb_update_cron 1
+    if ! systemctl is-active --quiet cron; then systemctl start cron; fi
+    if ! systemctl is-enabled --quiet cron; then systemctl enable cron; fi
     info "sing-box 自动更新脚本已部署（每天 04:00 执行）"
 else
-    warn "未检测到 /usr/local/bin/sb，跳过自动更新脚本部署"
+    error "未检测到 /usr/local/bin/sb，无法启用定时更新"
+    return 1
 fi
 }
 
-configure_security() {
-# ---------- 8. 自动安全更新 ----------
-step "配置自动安全更新 (unattended-upgrades)"
 
-backup_file /etc/apt/apt.conf.d/20auto-upgrades
-cat > /etc/apt/apt.conf.d/20auto-upgrades << 'EOF'
+configure_security() {
+    step '自动安全更新：保留已有更新来源、重启及清理策略'
+    local candidate
+    local -a apt_files=()
+    # 不覆盖发行版或用户的 20auto-upgrades / 50unattended-upgrades。
+    # 仅在没有传统周期配置时维护本脚本的独立 drop-in。
+    if [[ ! -e /etc/apt/apt.conf.d/20auto-upgrades ]]; then
+        candidate=$(mktemp /etc/apt/apt.conf.d/.vps-auto.XXXXXX)
+        cat > "$candidate" <<'EOF'
 APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
 APT::Periodic::AutocleanInterval "7";
 EOF
+        apt_files+=("$candidate" /etc/apt/apt.conf.d/20vps-auto-upgrades)
+    fi
+    apply_service_files unattended-upgrades validate_apt 1 "${apt_files[@]}" || return 1
+    info '自动安全更新服务已就绪，具体更新策略沿用现有 APT 配置'
 
-backup_file /etc/apt/apt.conf.d/50unattended-upgrades
-cat > /etc/apt/apt.conf.d/50unattended-upgrades << 'UUEOF'
-Unattended-Upgrade::Allowed-Origins {
-    "${distro_id}:${distro_codename}-security";
-    "${distro_id}ESMApps:${distro_codename}-apps-security";
-    "${distro_id}ESM:${distro_codename}-infra-security";
-};
-Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
-Unattended-Upgrade::Remove-Unused-Dependencies "true";
-Unattended-Upgrade::Automatic-Reboot "false";
-UUEOF
-
-systemctl enable --now unattended-upgrades
-info "自动安全更新已启用（仅安全补丁，不自动重启）"
-
-# ---------- 9. 日志大小限制 ----------
-step "限制 journald 日志大小"
-
-# drop-in 方式，不修改主配置文件
-mkdir -p /etc/systemd/journald.conf.d
-backup_file /etc/systemd/journald.conf.d/limit.conf
-cat > /etc/systemd/journald.conf.d/limit.conf << 'EOF'
-[Journal]
-SystemMaxUse=100M
-EOF
-systemctl restart systemd-journald
-info "journald 日志上限已设为 100M"
+    step 'journald 日志上限 100M'
+    install -d -m 0755 /etc/systemd/journald.conf.d
+    candidate=$(mktemp /etc/systemd/journald.conf.d/.vps-limit.XXXXXX)
+    printf '[Journal]\nSystemMaxUse=100M\n' > "$candidate"
+    apply_service_files systemd-journald validate_none 0 "$candidate" /etc/systemd/journald.conf.d/limit.conf
 }
 
 install_docker() {
@@ -888,15 +1009,12 @@ DOCKER_REPO_EOF
     info "Docker 安装完成: $(docker --version)"
 fi
 
-systemctl enable --now docker
-
 # 只使用部署者显式提供的镜像站；未提供时保留现有 mirrors。
 jq -e 'type == "array" and all(.[]; type == "string" and test("^https?://[^[:space:]]+$"))' <<< "$DOCKER_MIRRORS" >/dev/null || die 'DOCKER_MIRRORS 必须为 HTTP(S) 地址的 JSON 数组'
 # 配置 Docker daemon（可选镜像加速 + 日志限制）
 mkdir -p /etc/docker
 # 将本脚本的配置合并到现有 daemon.json；写入前校验，重启失败则回滚
 DAEMON_FILE="/etc/docker/daemon.json"
-DAEMON_BACKUP=""
 DAEMON_FRAGMENT=$(mktemp /etc/docker/daemon.fragment.XXXXXX)
 DAEMON_CANDIDATE=$(mktemp /etc/docker/daemon.candidate.XXXXXX)
 
@@ -916,9 +1034,6 @@ if [[ "$DOCKER_MIRRORS" != '[]' ]]; then
 fi
 
 if [[ -f "${DAEMON_FILE}" ]]; then
-    DAEMON_BACKUP="${DAEMON_FILE}.bak.$(date +%Y%m%d%H%M%S)"
-    cp -a "${DAEMON_FILE}" "${DAEMON_BACKUP}"
-    info "已有 daemon.json 已备份为: ${DAEMON_BACKUP}"
     if ! jq -s '.[0] * .[1]' "${DAEMON_FILE}" "${DAEMON_FRAGMENT}" > "${DAEMON_CANDIDATE}"; then
         rm -f "${DAEMON_FRAGMENT}" "${DAEMON_CANDIDATE}"
         error "现有 daemon.json 无法解析，未修改原文件"
@@ -935,23 +1050,8 @@ if ! jq empty "${DAEMON_CANDIDATE}" 2>/dev/null || \
     exit 1
 fi
 
-install -m 0644 "${DAEMON_CANDIDATE}" "${DAEMON_FILE}"
-rm -f "${DAEMON_FRAGMENT}" "${DAEMON_CANDIDATE}"
-
-if ! systemctl restart docker; then
-    error "Docker 重启失败，正在回滚 daemon.json..."
-    if [[ -n "${DAEMON_BACKUP}" ]]; then
-        cp -a "${DAEMON_BACKUP}" "${DAEMON_FILE}"
-    else
-        rm -f "${DAEMON_FILE}"
-    fi
-    if systemctl restart docker; then
-        error "已回滚到修改前的 Docker 配置"
-    else
-        error "回滚后 Docker 仍无法启动，请运行: journalctl -u docker -n 100"
-    fi
-    exit 1
-fi
+rm -f -- "$DAEMON_FRAGMENT"
+apply_service_files docker validate_docker 1 "$DAEMON_CANDIDATE" "$DAEMON_FILE" || return 1
 info "Docker daemon 已合并配置（按需设置镜像站 + 全局日志限制）"
 
 # 验证 compose 插件
@@ -1020,6 +1120,7 @@ services:
   watchtower:
     image: containrrr/watchtower:latest
     container_name: watchtower
+    profiles: ["watchtower"]
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -1188,24 +1289,36 @@ if ! docker compose --env-file "$BROWSERLESS_ENV_FILE" --project-directory "$STA
     error "docker-compose.yml 校验失败，保留原文件，未拉取镜像或启动服务"
     exit 1
 fi
-backup_file "$COMPOSE_TARGET"
-mv -f -- "$COMPOSE_CANDIDATE" "$COMPOSE_TARGET"
-info "docker-compose.yml 已生成并通过校验: $COMPOSE_TARGET"
-
-# ---------- 5. 拉取镜像 & 启动服务 ----------
-step "拉取镜像 & 启动服务"
-
-cd "${STACK_DIR}"
-
-info "开始拉取所选服务镜像（任何镜像失败都会停止部署）..."
-docker compose "${COMPOSE_ENV_ARGS[@]}" "${COMPOSE_PROFILE_ARGS[@]}" pull
-
-info "启动基础组件及所选 profile 服务..."
-docker compose "${COMPOSE_ENV_ARGS[@]}" "${COMPOSE_PROFILE_ARGS[@]}" up -d
-
-# 等待容器初始化
-info "等待容器启动（10 秒）..."
-sleep 10
+local compose_backup='' compose_changed=0
+if ! cmp -s -- "$COMPOSE_CANDIDATE" "$COMPOSE_TARGET"; then
+    if [[ -f "$COMPOSE_TARGET" ]]; then
+        compose_backup=$(mktemp "${COMPOSE_TARGET}.bak.$(date +%Y%m%d%H%M%S).XXXXXX")
+        cp -a -- "$COMPOSE_TARGET" "$compose_backup"
+    fi
+    mv -f -- "$COMPOSE_CANDIDATE" "$COMPOSE_TARGET"
+    compose_changed=1
+else
+    rm -f -- "$COMPOSE_CANDIDATE"
+    info 'Compose 内容未变化，跳过备份和替换'
+fi
+if ! start_selected_services 0; then
+    if (( compose_changed )); then
+        if [[ -n "$compose_backup" ]]; then
+            cp -a -- "$compose_backup" "$COMPOSE_TARGET" || return 1
+            error '部署失败，已恢复原 Compose，尝试恢复原服务配置'
+            if docker compose "${COMPOSE_ENV_ARGS[@]}" "${COMPOSE_PROFILE_ARGS[@]}" up -d && wait_selected_services; then
+                info '原 Compose 对应的服务已恢复并通过启动检查'
+            else
+                error '原 Compose 已恢复，但服务恢复未通过，请检查容器状态'
+            fi
+        else
+            rm -f -- "$COMPOSE_TARGET"
+            error '首次部署失败，已撤回本次 Compose 文件；保留容器供排查'
+        fi
+    fi
+    return 1
+fi
+info '所选服务已通过启动检查'
 
 # File Browser 的随机管理员密码只在首次初始化日志中出现一次
 if [[ -n "${ENABLED_PROFILES[files]+x}" ]]; then
@@ -1242,50 +1355,6 @@ echo "  journal 上限:    $(grep -oP 'SystemMaxUse=\K.*' /etc/systemd/journald.
 echo "  工作目录:        ${STACK_DIR}"
 echo ""
 
-# 容器运行状态检测
-info "容器运行状态检测："
-echo ""
-
-TOTAL=0
-RUNNING=0
-FAILED_LIST=""
-
-# 用纯字段格式避免表头干扰
-PS_OUTPUT=$(docker compose "${COMPOSE_ENV_ARGS[@]}" "${COMPOSE_PROFILE_ARGS[@]}" ps -a --format "{{.Name}} {{.State}}" 2>/dev/null || true)
-
-if [[ -z "$PS_OUTPUT" ]]; then
-    error "未检测到任何容器，部署可能完全失败"
-    error "排查命令: cd ${STACK_DIR} && docker compose --env-file .browserless.env logs"
-else
-    while IFS= read -r line; do
-        [[ -z "$line" ]] && continue
-        NAME=$(echo "$line" | awk '{print $1}')
-        STATE=$(echo "$line" | awk '{print $2}')
-        TOTAL=$((TOTAL + 1))
-        if [[ "$STATE" == "running" ]]; then
-            RUNNING=$((RUNNING + 1))
-            echo -e "  ${GREEN}✔${NC} ${NAME}"
-        else
-            FAILED_LIST="${FAILED_LIST}  ${RED}✘${NC} ${NAME} (${STATE})\n"
-        fi
-    done <<< "$PS_OUTPUT"
-
-    if [[ -n "$FAILED_LIST" ]]; then
-        echo -e "$FAILED_LIST"
-    fi
-
-    echo ""
-    if [[ $TOTAL -eq $RUNNING ]]; then
-        info "全部 ${TOTAL} 个容器运行正常"
-    elif [[ $RUNNING -gt 0 ]]; then
-        warn "${RUNNING}/${TOTAL} 个容器运行正常，$(( TOTAL - RUNNING )) 个异常"
-        warn "排查命令: cd ${STACK_DIR} && docker compose --env-file .browserless.env logs <容器名>"
-    else
-        error "所有容器均未正常启动，请检查: cd ${STACK_DIR} && docker compose --env-file .browserless.env logs"
-    fi
-fi
-echo ""
-
 echo -e "${CYAN}====== 部署后待办 ======${NC}"
 echo ""
 echo "  1. Nginx Proxy Manager"
@@ -1306,6 +1375,149 @@ echo "     或在 daemon.json 中添加对应加速地址后重新 docker compos
 echo ""
 }
 
+set_sb_update_cron() {
+    local enabled=$1 previous desired
+    previous=$(crontab -l 2>/dev/null || true)
+    desired=$(awk '!($0 !~ /^[[:space:]]*#/ && $0 ~ /(^|[[:space:]])\/usr\/local\/bin\/sb-auto-update\.sh([[:space:]]|$)/)' <<< "$previous")
+    if [[ "$enabled" == 1 ]]; then
+        desired="${desired:+$desired$'\n'}0 4 * * * /usr/local/bin/sb-auto-update.sh"
+    fi
+    if [[ "$desired" != "$previous" ]]; then
+        printf '%s\n' "$desired" | crontab - || return 1
+    else
+        info 'sing-box 定时任务未变化，跳过写入'
+    fi
+}
+
+apply_background_actions() {
+    if [[ "$VPS_SCENE" != domestic ]]; then
+        case "$IPERF3_ACTION" in
+            1) configure_iperf3 || return 1 ;;
+            2)
+                if systemctl cat iperf3-server.service >/dev/null 2>&1; then
+                    systemctl disable --now iperf3-server.service || return 1
+                fi
+                ;;
+        esac
+        case "$SB_UPDATE_ACTION" in
+            1) configure_sb_update || return 1 ;;
+            2) if command -v crontab >/dev/null 2>&1; then set_sb_update_cron 0 || return 1; fi ;;
+        esac
+    fi
+}
+
+setup_existing_stack() {
+    BROWSERLESS_ENV_FILE="$STACK_DIR/.browserless.env"
+    [[ -f "$STACK_DIR/docker-compose.yml" && -f "$BROWSERLESS_ENV_FILE" ]] || { error '未找到已有 Compose 或令牌文件，请先初始化/安装组件'; return 1; }
+    [[ $(wc -l < "$BROWSERLESS_ENV_FILE") == 1 ]] && grep -qxE 'BROWSERLESS_TOKEN=[0-9a-f]{64}' "$BROWSERLESS_ENV_FILE" || { error '已有令牌文件格式无效'; return 1; }
+    unset BROWSERLESS_TOKEN
+    COMPOSE_ENV_ARGS=(--env-file "$BROWSERLESS_ENV_FILE" -f "$STACK_DIR/docker-compose.yml")
+}
+
+# Compose 的 JSON 输出兼容数组或逐行对象；按 Service 字段逐一核对所选服务。
+check_service_snapshot() {
+    python3 -c '
+import json,sys
+text=sys.stdin.read().strip()
+decoder=json.JSONDecoder()
+rows=[]
+try:
+    while text:
+        item,end=decoder.raw_decode(text)
+        rows.extend(item if isinstance(item,list) else [item])
+        text=text[end:].lstrip()
+    if any(not isinstance(item,dict) for item in rows): raise ValueError()
+except (ValueError,TypeError):
+    print("无法解析容器状态 JSON",file=sys.stderr)
+    sys.exit(2)
+failed=False
+for service in sys.argv[1:]:
+    containers=[row for row in rows if row.get("Service")==service]
+    if not containers:
+        print(service+": 缺少容器")
+        failed=True
+    for row in containers:
+        state=row.get("State","")
+        health=row.get("Health","") or ""
+        ready=state=="running" and health in ("","healthy")
+        print(service+": "+state+" / "+(health or "未配置健康检查，仅确认进程运行"))
+        failed=failed or not ready
+sys.exit(1 if failed else 0)
+' "$@"
+}
+
+wait_selected_services() {
+    local timeout=${1:-$SERVICE_WAIT_TIMEOUT} configured snapshot report deadline result
+    local -a expected=()
+    configured=$(docker compose "${COMPOSE_ENV_ARGS[@]}" "${COMPOSE_PROFILE_ARGS[@]}" config --services) || { error '无法解析所选服务清单'; return 1; }
+    [[ -n "$configured" ]] || { error '所选服务清单为空'; return 1; }
+    mapfile -t expected <<< "$configured"
+    deadline=$((SECONDS + timeout))
+    while true; do
+        snapshot=$(docker compose "${COMPOSE_ENV_ARGS[@]}" "${COMPOSE_PROFILE_ARGS[@]}" ps --all --format json) || { error '读取容器状态失败'; return 1; }
+        if report=$(check_service_snapshot "${expected[@]}" <<< "$snapshot"); then
+            printf '%s\n' "$report"
+            return 0
+        else
+            result=$?
+        fi
+        if (( result > 1 )); then error '容器状态无法解析或检查工具不可用'; return 1; fi
+        if (( SECONDS >= deadline )); then
+            printf '%s\n' "$report" >&2
+            error '所选服务尚未全部就绪，或容器状态无效'
+            return 1
+        fi
+        sleep 2
+    done
+}
+
+start_selected_services() {
+    local update=$1
+    if [[ "$update" == 1 ]]; then
+        docker compose "${COMPOSE_ENV_ARGS[@]}" "${COMPOSE_PROFILE_ARGS[@]}" pull || { error '镜像更新失败，未执行启动'; return 1; }
+    fi
+    # 普通安装只补齐缺失镜像；不主动替换已有镜像。
+    docker compose "${COMPOSE_ENV_ARGS[@]}" "${COMPOSE_PROFILE_ARGS[@]}" up -d || { error 'Compose 启动失败'; return 1; }
+    if [[ "$WATCHTOWER_ACTION" == 2 ]]; then
+        docker compose "${COMPOSE_ENV_ARGS[@]}" --profile watchtower stop watchtower || return 1
+    fi
+    wait_selected_services || return 1
+}
+
+show_status() {
+    if [[ "$VPS_SCENE" == domestic ]]; then
+        setup_existing_stack || return 1
+        wait_selected_services 0
+    else
+        local service state
+        for service in fail2ban iperf3-server.service cron; do
+            state=$(systemctl is-active "$service" 2>/dev/null || true)
+            info "$service: ${state:-未安装}"
+        done
+        info "拥塞控制：$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo '由宿主机管理')"
+        if command -v crontab >/dev/null 2>&1; then
+            crontab -l 2>/dev/null | awk '/^[^#].*\/usr\/local\/bin\/sb-auto-update\.sh/ {found=1} END {print "sing-box 定时更新：" (found ? "已配置" : "未配置")}' || true
+        fi
+    fi
+}
+
+update_selected() {
+    if [[ "$VPS_SCENE" == domestic ]]; then
+        setup_existing_stack || return 1
+        start_selected_services 1
+    else
+        if [[ "$INSTALL_NEXTTRACE" == 1 ]]; then
+            if ! command -v nexttrace >/dev/null 2>&1 && ! command -v nxtrace >/dev/null 2>&1; then error 'NextTrace 未安装，请使用组件安装模式'; return 1; fi
+            run_installer https://nxtrace.org/nt || return 1
+        fi
+        if [[ "$INSTALL_SING_BOX" == 1 ]]; then
+            [[ -x /usr/local/bin/sb ]] || { error '未找到 sb 管理脚本，请先安装'; return 1; }
+            /usr/local/bin/sb update sh || return 1
+            /usr/local/bin/sb update core || return 1
+        fi
+    fi
+}
+
 # 第三方安装程序先完整下载并检查 Bash 语法，下载失败不得执行部分内容。
 run_installer() (
     local installer
@@ -1322,10 +1534,12 @@ show_help() {
   --plan  选择并打印方案，不安装软件或修改系统；可在普通用户下执行。
   --help  显示帮助。
 场景：VPS_SCENE=1/2/3/4/5 或 hk/la/de/minimal/domestic；0=退出。
+模式：VPS_MODE=1 full / 2 components / 3 status / 4 update；默认 full。
+后台选项：IPERF3_ACTION / WATCHTOWER_ACTION / SB_UPDATE_ACTION：0 保持、1 启用、2 停用。
 境外组件：VPS_COMPONENTS=0 无 / 1 NextTrace（默认）/ 2 sing-box / 3 两者。
 国内服务：SERVICE_PROFILES=1,4,6 等，0/none=基础（默认），8/all=全部。
 其他变量：VPS_HOSTNAME、UPGRADE_SYSTEM、INSTALL_STARSHIP、RESET_STARSHIP_CONFIG、
-          IPERF3_PORT、HOMEPAGE_HOST、STACK_DIR、DOCKER_MIRRORS。
+          IPERF3_PORT、HOMEPAGE_HOST、STACK_DIR、DOCKER_MIRRORS、SERVICE_WAIT_TIMEOUT。
 HELP
 }
 
@@ -1338,32 +1552,45 @@ main() {
         *) die '未知参数，使用 --help 查看用法' ;;
     esac
     (( $# <= 1 )) || die '参数过多，使用 --help 查看用法'
+    select_mode
     select_scene
     select_components
+    select_background_actions
     if [[ "$VPS_SCENE" == domestic ]]; then select_services; fi
     validate_options
     print_plan
     (( plan_only == 0 )) || return 0
     preflight
-    collect_hostname
+    if [[ "$VPS_MODE" == status ]]; then show_status; return $?; fi
+    if [[ "$VPS_MODE" == update ]]; then update_selected; return $?; fi
+    if [[ "$VPS_MODE" == full ]]; then collect_hostname; fi
     if [[ "$VPS_SCENE" == domestic ]]; then collect_homepage; fi
-    configure_hostname
-    install_base
-    step '终端美化：Starship（Bash）'
-    configure_starship
-    configure_security
+    if [[ "$VPS_MODE" == full ]]; then
+        configure_hostname
+    else
+        UPGRADE_SYSTEM=0
+    fi
+    if [[ "$VPS_MODE" == full || "$VPS_SCENE" == domestic || "$INSTALL_NEXTTRACE" == 1 || "$INSTALL_SING_BOX" == 1 || "$IPERF3_ACTION" == 1 || "$SB_UPDATE_ACTION" == 1 ]]; then
+        install_base
+    else
+        info '没有需要安装的组件，仅处理所选后台任务，跳过 APT'
+    fi
+    if [[ "$VPS_MODE" == full ]]; then
+        step '终端美化：Starship（Bash）'
+        configure_starship
+        configure_security
+    fi
     if [[ "$VPS_SCENE" == domestic ]]; then
         install_docker
         deploy_services
     else
-        configure_tcp
-        configure_iperf3
-        configure_fail2ban
-        if [[ "$INSTALL_NEXTTRACE" == 1 ]]; then install_nexttrace; fi
-        if [[ "$INSTALL_SING_BOX" == 1 ]]; then
-            install_singbox
-            configure_sb_update
+        if [[ "$VPS_MODE" == full ]]; then
+            configure_tcp
+            configure_fail2ban
         fi
+        if [[ "$INSTALL_NEXTTRACE" == 1 ]]; then install_nexttrace; fi
+        if [[ "$INSTALL_SING_BOX" == 1 ]]; then install_singbox; fi
+        apply_background_actions
         step '初始化完成'
         info "场景：$SCENE_NAME；拥塞控制：$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo '由宿主机管理')"
         info "iperf3：$(systemctl is-active iperf3-server.service 2>/dev/null || true)；fail2ban：$(systemctl is-active fail2ban 2>/dev/null || true)"
