@@ -19,6 +19,172 @@ warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1"; }
 step()  { echo -e "\n${CYAN}======== $1 ========${NC}"; }
 
+# ---------- Starship 公共配置（各版本保持一致） ----------
+# 使用子 Shell 清理临时文件，不改变主脚本或调用者的 Shell。
+configure_starship() (
+    case "${INSTALL_STARSHIP:-1}" in
+        0) info "已通过 INSTALL_STARSHIP=0 跳过 Starship"; return 0 ;;
+        1) ;;
+        *) error "INSTALL_STARSHIP 仅支持 0 或 1"; return 1 ;;
+    esac
+
+    case "${RESET_STARSHIP_CONFIG:-0}" in
+        0|1) ;;
+        *) error "RESET_STARSHIP_CONFIG 仅支持 0 或 1"; return 1 ;;
+    esac
+
+    local account_home work_dir installer login_file file staged backup_id i
+    local theme_preserved=false
+    local -a targets staged_files
+    account_home=$(getent passwd "$EUID" | cut -d: -f6)
+    if [[ "$account_home" != /* || ! -d "$account_home" ]]; then
+        error "无法确定当前 root 账号的主目录，停止配置 Starship"
+        return 1
+    fi
+    work_dir=$(mktemp -d)
+    trap 'rm -rf -- "$work_dir"' EXIT
+    installer="$work_dir/install.sh"
+
+    if command -v starship >/dev/null 2>&1; then
+        info "Starship 已安装，将复用现有版本"
+    else
+        info "从 Starship 官方站点下载安装程序..."
+        # 先完整下载再执行，下载失败时不执行残缺脚本。
+        if ! curl -fsSL --connect-timeout 15 --max-time 120 \
+            https://starship.rs/install.sh -o "$installer"; then
+            warn "Starship 安装程序下载失败，跳过终端美化；其他初始化继续"
+            return 0
+        fi
+        install -d -m 0755 /usr/local/bin
+        if ! sh "$installer" --yes --bin-dir /usr/local/bin; then
+            warn "Starship 安装失败，跳过终端美化；其他初始化继续"
+            return 0
+        fi
+        hash -r
+    fi
+    if ! starship --version; then
+        warn "Starship 无法运行，保留现有 Shell 配置；其他初始化继续"
+        return 0
+    fi
+
+    cat > "$work_dir/starship.toml" << 'STARSHIP_CONFIG_EOF'
+# VPS 简洁单行提示符：无需 Nerd Font。
+add_newline = false
+format = '$username$hostname$directory$git_branch$cmd_duration$character'
+
+[username]
+show_always = true
+style_root = 'bold red'
+style_user = 'bold green'
+format = '[$user]($style)'
+
+[hostname]
+ssh_only = false
+style = 'bold cyan'
+format = '[@$hostname]($style) '
+
+[directory]
+style = 'bold yellow'
+format = '[$path]($style)[$read_only]($read_only_style) '
+read_only = ' (ro)'
+truncation_length = 3
+truncate_to_repo = false
+
+[git_branch]
+symbol = 'git:'
+style = 'bold purple'
+format = '[$symbol$branch]($style) '
+
+[cmd_duration]
+min_time = 2000
+format = '[took $duration](bold yellow) '
+
+[character]
+success_symbol = '[>](bold green)'
+error_symbol = '[>](bold red)'
+STARSHIP_CONFIG_EOF
+
+    # .bash_profile / .bash_login 存在时，Bash 登录不一定读取 .profile。
+    # 同时配置 .bashrc 和实际生效的登录文件；同一个 Shell 只初始化一次。
+    login_file="$account_home/.profile"
+    for file in "$account_home/.bash_profile" "$account_home/.bash_login" "$account_home/.profile"; do
+        if [[ -f "$file" ]]; then
+            login_file="$file"
+            break
+        fi
+    done
+    targets=("$account_home/.config/starship.toml" "$account_home/.bashrc" "$login_file")
+    staged_files=("$work_dir/starship.toml" "$work_dir/bashrc" "$work_dir/login")
+    for i in 1 2; do
+        file=${targets[$i]}
+        staged=${staged_files[$i]}
+        : > "$staged"
+        if [[ -e "$file" ]]; then
+            # 只替换本脚本管理的区块，保留用户的其他配置。
+            if ! awk '
+                $0 == "# >>> vps-init starship >>>" { if (inside) exit 1; inside=1; next }
+                $0 == "# <<< vps-init starship <<<" { if (!inside) exit 1; inside=0; next }
+                !inside { print }
+                END { if (inside) exit 1 }
+            ' "$file" > "$staged"; then
+                error "$file 的 Starship 标记不完整，未修改原文件"
+                return 1
+            fi
+        fi
+        cat >> "$staged" << 'STARSHIP_INIT_EOF'
+# >>> vps-init starship >>>
+# 仅在交互式 Bash 中加载，避免其他 Shell 解析 Bash 初始化代码。
+if [ -n "${BASH_VERSION:-}" ] && [ "${__VPS_STARSHIP_INITIALIZED:-}" != "$$" ]; then
+    case $- in
+        *i*)
+            if command -v starship >/dev/null 2>&1; then
+                export STARSHIP_CONFIG="$HOME/.config/starship.toml"
+                eval "$(starship init bash)"
+                __VPS_STARSHIP_INITIALIZED=$$
+            fi
+            ;;
+    esac
+fi
+# <<< vps-init starship <<<
+STARSHIP_INIT_EOF
+        if ! bash -n "$staged"; then
+            error "$file 的 Bash 语法校验失败，未修改原文件"
+            return 1
+        fi
+    done
+
+    mkdir -p "$account_home/.config"
+    backup_id="$(date +%Y%m%d-%H%M%S).${work_dir##*.}"
+    # 全部准备并校验后再写入；有内容变化时才备份和替换。
+    for i in 0 1 2; do
+        file=${targets[$i]}
+        staged=${staged_files[$i]}
+        # 默认保留已有主题；只有明确要求重置时才应用内置单行样式。
+        if [[ "$i" == 0 && "${RESET_STARSHIP_CONFIG:-0}" == 0 ]] && \
+            [[ -e "$file" || -L "$file" ]]; then
+            theme_preserved=true
+            info "已保留已有 Starship 配置: $file（RESET_STARSHIP_CONFIG=1 可重置）"
+            continue
+        fi
+        if cmp -s "$staged" "$file"; then
+            continue
+        fi
+        if [[ -e "$file" ]]; then
+            cp -pL -- "$file" "$file.bak.$backup_id"
+            info "已备份: $file.bak.$backup_id"
+        fi
+        cp -- "$staged" "$file"
+    done
+    if [[ "$theme_preserved" == true ]]; then
+        info "Starship Bash 自动加载已配置，继续使用已有主题"
+    else
+        info "Starship 已配置：彩色单行提示符（> 与目录同一行），无额外空行"
+    fi
+    info "重新连接 SSH，或在当前 Bash 执行: source ~/.bashrc"
+    info "仅配置当前 root 账号；不会切换登录 Shell 或卸载 fish"
+)
+# ---------- Starship 公共配置结束 ----------
+
 # 始终从控制终端读取交互输入，避免 curl | bash 时误读脚本管道。
 # -e 启用 Readline，支持退格、Delete 和方向键编辑。
 read_tty() {
@@ -113,9 +279,29 @@ step "2/10 系统更新 & 安装基础工具"
 # 非交互模式：避免 conffile 冲突弹窗和 needrestart 交互卡死脚本
 export DEBIAN_FRONTEND=noninteractive
 export NEEDRESTART_MODE=a
-apt-get update && apt-get upgrade -y -o Dpkg::Options::="--force-confold"
-apt-get install -y fail2ban python3-systemd iperf3 cron curl wget unattended-upgrades
+# ---------- 更新软件包索引与系统升级 ----------
+case "${UPGRADE_SYSTEM:-1}" in
+    0|1) ;;
+    *) error "UPGRADE_SYSTEM 仅支持 0 或 1"; exit 1 ;;
+esac
+if ! apt-get update; then
+    error "软件包索引更新失败，停止初始化；请解决 APT 错误后重试"
+    exit 1
+fi
+if [[ "${UPGRADE_SYSTEM:-1}" == 1 ]]; then
+    if ! apt-get upgrade -y -o Dpkg::Options::="--force-confold"; then
+        error "系统升级失败，停止初始化；请解决 APT 错误后重试"
+        exit 1
+    fi
+else
+    info "已通过 UPGRADE_SYSTEM=0 跳过系统升级，仍更新索引并安装所需工具"
+fi
+# ---------- 系统升级处理结束 ----------
+apt-get install -y fail2ban python3-systemd iperf3 cron curl wget ca-certificates tar unattended-upgrades
 info "系统更新及基础工具安装完成"
+
+step "终端美化：Starship（Bash）"
+configure_starship
 
 # ---------- 3. TCP 调优 ----------
 step "3/10 TCP 调优 (sysctl)"

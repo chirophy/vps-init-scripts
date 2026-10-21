@@ -6,12 +6,15 @@
 
 | 文件 | 用途 |
 | --- | --- |
+| `vps-init.sh` | 推荐整合入口：按序号选择场景和可选组件，单文件独立运行 |
 | `overseas-vps-init.sh` | HK / JP 等低延迟精品线路 |
 | `overseas-vps-init-la.sh` | LA 等高延迟、长距离大带宽线路 |
 | `overseas-vps-init-de.sh` | DE / 法兰克福线路，兼容受限容器环境的 TCP 参数配置 |
 | `overseas-vps-init-minimal.sh` | 不安装 sing-box / NextTrace 的精简版本 |
 | `domestic-vps-init.sh` | 国内 VPS 的 Docker / Compose 自托管服务部署 |
 | `README.md` | 版本选择和运行方法 |
+
+整合入口新增或修改公共逻辑时，优先维护对应函数，并核对旧版是否需要同步；`tests/unified-init-test.sh` 使用替身验证场景调度、TCP 差异和 Compose 配置生成。
 
 ## 修改原则
 
