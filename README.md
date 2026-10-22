@@ -39,14 +39,23 @@ bash vps-init.sh
 
 | 模式序号 | `VPS_MODE` | 操作范围 |
 | --- | --- | --- |
-| 1 | `full`（默认） | 完整初始化：主机名、APT 更新/升级、基础工具、Starship、安全更新、日志限制，以及场景步骤 |
+| 1 | `full`（默认，直接回车选择） | 完整初始化：主机名、APT 更新/升级、基础工具、Starship、安全更新、日志限制，以及场景步骤 |
 | 2 | `components` | 仅安装所选组件及其依赖；更新 APT 索引，但强制跳过系统升级，不改主机名、Starship、安全策略或 TCP 参数 |
 | 3 | `status` | 只读检查现有服务；不安装依赖、不创建令牌文件或改权限；国内场景按所选服务验收 |
 | 4 | `update` | 国内复用已有 Compose、拉取并启动所选服务；境外对已安装的所选 NextTrace 重新运行原安装器，对 sb 执行脚本/内核更新；不重新初始化系统或设置定时任务 |
 
 完整初始化的公共步骤每次只执行一次；配置内容一致时不重复备份、写入或重启服务。补装工具建议选模式 `2`，查看状态选 `3`，主动升级服务选 `4`。普通安装模式不再主动拉取已有服务的新镜像，缺失镜像仍由 Compose 按其策略拉取。
 
-选择场景 1–3 后，再输入境外组件序号：`0` 均不安装、`1` NextTrace（默认）、`2` sing-box、`3` 两者都安装。安装 sing-box 与启用其定时更新分别选择；第三方安装器可能仍有自身交互。所选安装失败或安装后未检测到命令时返回失败。
+所有编号菜单均按选项逐行显示。选择场景 1–3 后，再选择境外组件；直接回车默认选择 `1`：
+
+| 组件序号 | 安装内容 |
+| --- | --- |
+| 1 | NextTrace + sing-box（默认） |
+| 2 | 仅 NextTrace |
+| 3 | 仅 sing-box |
+| 0 | 不选择 |
+
+安装 sing-box 与启用其定时更新分别选择；第三方安装器可能仍有自身交互。所选安装失败或安装后未检测到命令时返回失败。精简版和国内场景仍不选择这些境外组件，状态检查也不会安装组件。
 
 完整初始化和组件模式还会分别询问后台任务：
 
@@ -92,7 +101,7 @@ bash vps-init.sh
 | --- | --- |
 | `VPS_MODE` | `1`–`4` 或 `full` / `components` / `status` / `update`，默认 `full` |
 | `VPS_SCENE` | `1`–`5`，也接受 `hk` / `la` / `de` / `minimal` / `domestic`；必须选择 |
-| `VPS_COMPONENTS` | 场景 1–3 的工具序号 `0`–`3`，默认 `1`；精简/国内固定为 `0` |
+| `VPS_COMPONENTS` | 按上方组件表选择，默认 `1`（NextTrace + sing-box）；精简/国内固定为 `0`。此前设置过该变量时，请按新映射调整 |
 | `SERVICE_PROFILES` | 国内服务序号或名称，例如 `1,4,6` 或 `tools,rss,monitoring`；默认 `0`，全部用 `8` / `all` |
 | `VPS_HOSTNAME` | 新主机名；不提供时询问，回车或无终端则跳过 |
 | `UPGRADE_SYSTEM` | 默认 `1`；`0` 跳过全系统升级，仍更新索引并安装工具 |
@@ -107,13 +116,13 @@ bash vps-init.sh
 
 ```bash
 # DE：安装 NextTrace，不安装 sing-box；先只预览
-VPS_SCENE=3 VPS_COMPONENTS=1 bash vps-init.sh --plan
+VPS_SCENE=3 VPS_COMPONENTS=2 bash vps-init.sh --plan
 
 # 国内：仅部署 RSS 和监控组，不需要 Homepage 域名；先只预览
 VPS_SCENE=5 SERVICE_PROFILES=4,6 bash vps-init.sh --plan
 
 # 仅补装 NextTrace，同时启用 iperf3，不执行全系统升级；先预览
-VPS_MODE=components VPS_SCENE=1 VPS_COMPONENTS=1 IPERF3_ACTION=1 bash vps-init.sh --plan
+VPS_MODE=components VPS_SCENE=1 VPS_COMPONENTS=2 IPERF3_ACTION=1 bash vps-init.sh --plan
 
 # 查看现有 RSS 服务组的状态（目标 VPS 上运行）
 VPS_MODE=status VPS_SCENE=5 SERVICE_PROFILES=4 bash vps-init.sh
@@ -124,7 +133,7 @@ VPS_MODE=update VPS_SCENE=5 SERVICE_PROFILES=4 bash vps-init.sh --plan
 # 正式执行时去掉 --plan；请在目标 VPS 上以 root 运行
 ```
 
-2026-10-21 已核对上述整合版 Gist，其 `vps-init.sh` 与本次同步的脚本内容一致。`raw` 最新地址未固定到具体修订，后续会随 Gist 更新变化。下方旧 Gist 地址仍对应原有独立入口，不应作为整合版下载地址。
+2026-10-22 已核对上述整合版 Gist，其 `vps-init.sh` 与本次同步的脚本内容一致。`raw` 最新地址未固定到具体修订，后续会随 Gist 更新变化。下方旧 Gist 地址仍对应原有独立入口，不应作为整合版下载地址。
 
 ## 旧版独立入口
 

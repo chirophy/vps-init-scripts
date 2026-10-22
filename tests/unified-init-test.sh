@@ -7,10 +7,52 @@ trap 'rm -rf -- "$test_dir"' EXIT
 fail() { printf '[FAIL] %s\n' "$*" >&2; exit 1; }
 # shellcheck disable=SC1091
 source "$project_dir/vps-init.sh"
+real_read_tty=$(declare -f read_tty)
 read_tty() { printf -v "$1" '%s' "${3-}"; }
 if ! python3 -c 'import sys' >/dev/null 2>&1; then python3() { python "$@"; }; fi
 VPS_MODE=full
 IPERF3_ACTION=0 WATCHTOWER_ACTION=0 SB_UPDATE_ACTION=0 SERVICE_WAIT_TIMEOUT=1
+
+# 保留真实 read 逻辑，只把 /dev/tty 替换成临时输入文件，模拟用户直接按回车。
+(
+    printf -v fixture_input '%q' "$test_dir/tty-input"
+    definition=${real_read_tty//\/dev\/tty/$fixture_input}
+    eval "$definition"
+    printf '\n' > "$test_dir/tty-input"
+    unset VPS_MODE
+    select_mode > "$test_dir/menu"
+    [[ "$VPS_MODE" == full ]] || fail '模式直接回车没有选择完整初始化'
+    VPS_SCENE=hk
+    unset VPS_COMPONENTS
+    select_components > "$test_dir/menu"
+    [[ "$VPS_COMPONENTS:$INSTALL_NEXTTRACE:$INSTALL_SING_BOX" == 1:1:1 ]] || fail '组件直接回车没有选择 NextTrace + sing-box'
+    printf '2\n' > "$test_dir/tty-input"
+    unset VPS_MODE
+    select_mode > "$test_dir/menu"
+    [[ "$VPS_MODE" == components ]] || fail '显式输入模式被默认值覆盖'
+    printf '\n' > "$test_dir/tty-input"
+    read_tty NEW_HOSTNAME '主机名: ' ''
+    [[ -z "$NEW_HOSTNAME" ]] || fail '主机名空输入不再能跳过'
+)
+for component_case in 0:0:0 1:1:1 2:1:0 3:0:1; do
+    IFS=: read -r selection expected_nexttrace expected_singbox <<< "$component_case"
+    VPS_SCENE=hk VPS_COMPONENTS=$selection select_components > "$test_dir/menu"
+    [[ "$INSTALL_NEXTTRACE:$INSTALL_SING_BOX" == "$expected_nexttrace:$expected_singbox" ]] || fail "组件映射错误: $selection"
+done
+(
+    VPS_SCENE=hk
+    unset VPS_MODE VPS_COMPONENTS
+    select_mode > "$test_dir/menu"
+    select_components >> "$test_dir/menu"
+    [[ "$VPS_MODE:$VPS_COMPONENTS:$INSTALL_NEXTTRACE:$INSTALL_SING_BOX" == full:1:1:1 ]] || fail '默认模式或默认组件错误'
+    select_background_actions >> "$test_dir/menu"
+    VPS_SCENE=domestic SERVICE_PROFILES=0 select_services >> "$test_dir/menu"
+    show_help >> "$test_dir/menu"
+    if grep -Eq '[0-9]\).*[0-9]\)' "$test_dir/menu"; then fail '同一行显示了多个编号选项'; fi
+    VPS_SCENE=hk VPS_COMPONENTS=1 select_components > "$test_dir/component-menu"
+    [[ $(sed -n 's/^[[:space:]]*\([0-9]\)).*/\1/p' "$test_dir/component-menu" | paste -sd, -) == 1,2,3,0 ]] || fail '组件菜单顺序错误'
+)
+printf '[PASS] 真实空行输入默认值、组件映射、纵向菜单与选项顺序\n'
 
 # 菜单、默认值、序号与兼容名称、非法值均在任何系统操作前处理。
 for selection in 1 2 3 4 5 hk la de minimal domestic; do
@@ -54,7 +96,7 @@ for scene in 1 2 3 4 5; do
         systemctl() { printf 'active\n'; }
         VPS_SCENE=$scene
         unset VPS_COMPONENTS SERVICE_PROFILES
-        if [[ "$scene" == 1 ]]; then VPS_COMPONENTS=3; SB_UPDATE_ACTION=1; IPERF3_ACTION=1; fi
+        if [[ "$scene" == 1 ]]; then VPS_COMPONENTS=1; SB_UPDATE_ACTION=1; IPERF3_ACTION=1; fi
         : > "$test_dir/calls"
         main --plan > "$test_dir/plan"
         [[ ! -s "$test_dir/calls" ]] || fail '--plan 触发了系统步骤'
@@ -75,6 +117,7 @@ for scene in 1 2 3 4 5; do
                 grep -qx configure_sb_update "$test_dir/calls" || fail '未配置选择的自动更新'
             else
                 grep -qx install_nexttrace "$test_dir/calls" || fail '未安装默认 NextTrace'
+                grep -qx install_singbox "$test_dir/calls" || fail '未安装默认 sing-box'
                 ! grep -qx configure_sb_update "$test_dir/calls" || fail '默认配置了 sb 更新'
             fi
         fi
@@ -198,8 +241,8 @@ printf '[PASS] Compose 令牌复用、无变化跳过、校验/启动失败恢�
 printf '[PASS] 第三方安装器下载失败及语法错误拦截\n'
 
 # 实际命令入口只运行 --plan；覆盖文件、进程替换和管道，尤其是 stdin 无 BASH_SOURCE 的情况。
-VPS_SCENE=3 VPS_COMPONENTS=1 bash "$project_dir/vps-init.sh" --plan > "$test_dir/entry-file"
-VPS_SCENE=3 VPS_COMPONENTS=1 bash <(cat "$project_dir/vps-init.sh") --plan > "$test_dir/entry-fd"
+VPS_SCENE=3 VPS_COMPONENTS=2 bash "$project_dir/vps-init.sh" --plan > "$test_dir/entry-file"
+VPS_SCENE=3 VPS_COMPONENTS=2 bash <(cat "$project_dir/vps-init.sh") --plan > "$test_dir/entry-fd"
 cat "$project_dir/vps-init.sh" | VPS_SCENE=5 VPS_COMPONENTS=0 SERVICE_PROFILES=4,6 bash -s -- --plan > "$test_dir/entry-pipe"
 grep -q 'DE / 法兰克福线路' "$test_dir/entry-file" || fail '文件入口未执行预览'
 cmp -s "$test_dir/entry-file" "$test_dir/entry-fd" || fail '进程替换入口输出不一致'

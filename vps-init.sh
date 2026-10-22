@@ -203,7 +203,8 @@ read_tty() {
         warn "未检测到可交互终端，将使用默认值"
     fi
 
-    printf -v "$target_var" '%s' "$reply"
+    # read 成功读到空行时也应用默认值；主机名等空默认值仍保持为空。
+    printf -v "$target_var" '%s' "${reply:-$default_value}"
 }
 
 valid_hostname() {
@@ -245,7 +246,11 @@ require_choice() {
 }
 
 select_mode() {
-    echo '运行模式：1) 完整初始化  2) 仅安装组件  3) 检查状态  4) 更新已部署组件/服务'
+    echo '运行模式：'
+    echo '  1) 完整初始化（默认）'
+    echo '  2) 仅安装组件'
+    echo '  3) 检查状态'
+    echo '  4) 更新已部署组件/服务'
     require_choice VPS_MODE '请输入模式序号（默认 1）: ' 1
     case "$VPS_MODE" in
         1|full) VPS_MODE=full ;;
@@ -261,15 +266,33 @@ select_mode() {
 select_background_actions() {
     if [[ "$VPS_MODE" == full || "$VPS_MODE" == components ]]; then
         if [[ "$VPS_SCENE" == domestic ]]; then
-            require_choice WATCHTOWER_ACTION 'Watchtower 自动更新：0) 保持现状  1) 启用  2) 停用（默认 0）: ' 0
+            show_background_menu 'Watchtower 自动更新'
+            require_choice WATCHTOWER_ACTION '请输入选项序号（默认 0）: ' 0
         else
-            require_choice IPERF3_ACTION 'iperf3 常驻：0) 保持现状  1) 启用  2) 停用（默认 0）: ' 0
-            require_choice SB_UPDATE_ACTION 'sing-box 定时更新：0) 保持现状  1) 启用  2) 停用（默认 0）: ' 0
+            show_background_menu 'iperf3 常驻服务'
+            require_choice IPERF3_ACTION '请输入选项序号（默认 0）: ' 0
+            show_background_menu 'sing-box 定时更新'
+            require_choice SB_UPDATE_ACTION '请输入选项序号（默认 0）: ' 0
         fi
     fi
     IPERF3_ACTION=${IPERF3_ACTION:-0}
     WATCHTOWER_ACTION=${WATCHTOWER_ACTION:-0}
     SB_UPDATE_ACTION=${SB_UPDATE_ACTION:-0}
+}
+
+show_background_menu() {
+    printf '%s：\n' "$1"
+    echo '  0) 保持现状（默认）'
+    echo '  1) 启用'
+    echo '  2) 停用'
+}
+
+background_action_label() {
+    case "$1" in
+        0) printf '保持现状' ;;
+        1) printf '启用' ;;
+        2) printf '停用' ;;
+    esac
 }
 
 select_scene() {
@@ -301,16 +324,20 @@ select_components() {
         [[ "${VPS_COMPONENTS:-0}" == 0 ]] || die '精简版和国内版不支持 VPS_COMPONENTS；境外工具请选择场景 1-3'
         VPS_COMPONENTS=0
     else
-        echo '境外组件：0) 均不选择  1) NextTrace  2) sing-box  3) 两者都选择'
+        echo '境外组件：'
+        echo '  1) NextTrace + sing-box（默认）'
+        echo '  2) 仅 NextTrace'
+        echo '  3) 仅 sing-box'
+        echo '  0) 不选择'
         require_choice VPS_COMPONENTS '请输入组件序号（默认 1）: ' 1
         case "$VPS_COMPONENTS" in 0|1|2|3) ;; *) die '组件序号必须为 0-3' ;; esac
     fi
     INSTALL_NEXTTRACE=0
     INSTALL_SING_BOX=0
     case "$VPS_COMPONENTS" in
-        1) INSTALL_NEXTTRACE=1 ;;
-        2) INSTALL_SING_BOX=1 ;;
-        3) INSTALL_NEXTTRACE=1; INSTALL_SING_BOX=1 ;;
+        1) INSTALL_NEXTTRACE=1; INSTALL_SING_BOX=1 ;;
+        2) INSTALL_NEXTTRACE=1 ;;
+        3) INSTALL_SING_BOX=1 ;;
     esac
 }
 
@@ -322,9 +349,15 @@ select_services() {
     local profile selection item
     local -a requested=()
     echo '国内服务组（NPM 为基础服务，Watchtower 在安装模式中另选）：'
-    echo '  1) Homepage + IT-Tools   2) Gitea   3) Navidrome + MeTube'
-    echo '  4) RSSHub + Browserless + Redis   5) File Browser + OpenList'
-    echo '  6) Uptime Kuma + Beszel   7) Memos   8) 全部   0) 仅基础组件'
+    echo '  1) Homepage + IT-Tools'
+    echo '  2) Gitea'
+    echo '  3) Navidrome + MeTube'
+    echo '  4) RSSHub + Browserless + Redis'
+    echo '  5) File Browser + OpenList'
+    echo '  6) Uptime Kuma + Beszel'
+    echo '  7) Memos'
+    echo '  8) 全部'
+    echo '  0) 仅基础组件'
     require_choice SERVICE_PROFILES '输入序号，多个用逗号分隔（默认 0）: ' 0
     selection=${SERVICE_PROFILES//[[:space:]]/}
     case "$selection" in
@@ -381,7 +414,7 @@ validate_options() {
 print_plan() {
     step '执行方案'
     info "场景：$SCENE_NAME"
-    info "模式：${VPS_MODE:-full}；0=保持现状，1=启用，2=停用"
+    info "模式：${VPS_MODE:-full}"
     if [[ "${VPS_MODE:-full}" == full ]]; then
         info "公共步骤：主机名（可跳过）、APT 更新（系统升级=${UPGRADE_SYSTEM:-1}）、Starship=${INSTALL_STARSHIP:-1}、自动安全更新、journald 100M"
     elif [[ "$VPS_MODE" == components ]]; then
@@ -390,11 +423,11 @@ print_plan() {
         info '复用已有配置；检查模式只读，更新模式仅更新选择的已部署组件/服务'
     fi
     if [[ "$VPS_SCENE" == domestic ]]; then
-        info "Docker / Compose；基础服务 NPM；可选服务：${SELECTED_PROFILE_NAMES[*]:-无}；Watchtower=$WATCHTOWER_ACTION"
+        info "Docker / Compose；基础服务 NPM；可选服务：${SELECTED_PROFILE_NAMES[*]:-无}；Watchtower=$(background_action_label "$WATCHTOWER_ACTION")"
         info "服务目录：$STACK_DIR"
     else
-        info "TCP 参数方案：$VPS_SCENE；fail2ban；iperf3=$IPERF3_ACTION（端口 $IPERF3_PORT）"
-        info "安装 NextTrace=$INSTALL_NEXTTRACE，安装 sing-box=$INSTALL_SING_BOX，定时更新=$SB_UPDATE_ACTION"
+        info "TCP 参数方案：$VPS_SCENE；fail2ban；iperf3=$(background_action_label "$IPERF3_ACTION")（端口 $IPERF3_PORT）"
+        info "安装 NextTrace=$INSTALL_NEXTTRACE，安装 sing-box=$INSTALL_SING_BOX，定时更新=$(background_action_label "$SB_UPDATE_ACTION")"
     fi
     info '未选择的组件不新装、不卸载，已有服务和定时任务不会因此被移除。'
 }
@@ -1533,11 +1566,37 @@ show_help() {
 用法：bash vps-init.sh [--plan | --help]
   --plan  选择并打印方案，不安装软件或修改系统；可在普通用户下执行。
   --help  显示帮助。
-场景：VPS_SCENE=1/2/3/4/5 或 hk/la/de/minimal/domestic；0=退出。
-模式：VPS_MODE=1 full / 2 components / 3 status / 4 update；默认 full。
-后台选项：IPERF3_ACTION / WATCHTOWER_ACTION / SB_UPDATE_ACTION：0 保持、1 启用、2 停用。
-境外组件：VPS_COMPONENTS=0 无 / 1 NextTrace（默认）/ 2 sing-box / 3 两者。
-国内服务：SERVICE_PROFILES=1,4,6 等，0/none=基础（默认），8/all=全部。
+场景（VPS_SCENE）：
+  1) hk / jp：HK / JP 精品线路
+  2) la：LA 高延迟线路
+  3) de：DE / 法兰克福线路
+  4) minimal：精简基础版
+  5) domestic：国内自托管服务
+  0) 退出
+模式（VPS_MODE）：
+  1) full：完整初始化（直接回车默认选择）
+  2) components：仅安装组件
+  3) status：检查状态
+  4) update：更新已部署组件/服务
+境外组件（VPS_COMPONENTS）：
+  1) NextTrace + sing-box（直接回车默认选择）
+  2) 仅 NextTrace
+  3) 仅 sing-box
+  0) 不选择
+后台选项（IPERF3_ACTION / WATCHTOWER_ACTION / SB_UPDATE_ACTION）：
+  0) 保持现状（默认）
+  1) 启用
+  2) 停用
+国内服务组（SERVICE_PROFILES，支持逗号多选，也接受对应 profile 名称）：
+  1) tools：Homepage + IT-Tools
+  2) code：Gitea
+  3) media：Navidrome + MeTube
+  4) rss：RSSHub + Browserless + Redis
+  5) files：File Browser + OpenList
+  6) monitoring：Uptime Kuma + Beszel
+  7) notes：Memos
+  8) all：全部服务组
+  0) none：仅基础组件（默认）
 其他变量：VPS_HOSTNAME、UPGRADE_SYSTEM、INSTALL_STARSHIP、RESET_STARSHIP_CONFIG、
           IPERF3_PORT、HOMEPAGE_HOST、STACK_DIR、DOCKER_MIRRORS、SERVICE_WAIT_TIMEOUT。
 HELP
