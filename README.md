@@ -55,7 +55,7 @@ bash vps-init.sh
 | 3 | 仅 sing-box |
 | 0 | 不选择 |
 
-安装 sing-box 与启用其定时更新分别选择；第三方安装器可能仍有自身交互。所选安装失败或安装后未检测到命令时返回失败。精简版和国内场景仍不选择这些境外组件，状态检查也不会安装组件。
+安装 sing-box 与启用其定时更新分别选择；第三方安装器可能仍有自身交互。sing-box 根据实际内核版本检查和 `sing-box.service` 运行状态判断安装结果，兼容上游安装成功但返回非零退出码的情况。优先检查 `/etc/sing-box/bin/sing-box`，避免把 PATH 中的管理脚本当作内核；仅有管理入口、内核不可用或服务未运行都会返回失败。已经安装且服务运行时会跳过安装，已有残留但未通过检查时会提示排查，不自动重装或重新生成节点。精简版和国内场景仍不选择这些境外组件，状态检查也不会安装组件。
 
 完整初始化和组件模式还会分别询问后台任务：
 
@@ -225,9 +225,10 @@ bash tests/starship-config-test.sh
 bash tests/system-update-test.sh
 bash tests/unified-init-test.sh
 bash tests/reliability-test.sh
+bash tests/singbox-install-test.sh
 ```
 
-新增隔离测试覆盖五种场景和四种模式、菜单映射、公共步骤只执行一次、只读预览、TCP 差异、Compose 令牌复用与失败恢复、后台任务独立启停、健康状态解析、无变化跳过及原有自动更新策略保留。Docker / systemd / sysctl 等操作使用替身，不能替代真实 Debian / Ubuntu 隔离环境中的部署验收。
+新增隔离测试覆盖五种场景和四种模式、菜单映射、公共步骤只执行一次、只读预览、TCP 差异、Compose 令牌复用与失败恢复、后台任务独立启停、健康状态解析、无变化跳过及原有自动更新策略保留。sing-box 专项测试覆盖成功但非零退出、退出零但内核缺失/服务未运行、已有实例跳过和节点文件保留。Docker / systemd / sysctl 等操作使用替身，不能替代真实 Debian / Ubuntu 隔离环境中的部署验收。
 
 ## 国内 VPS 数据与凭据
 

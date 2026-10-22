@@ -838,24 +838,68 @@ else
 fi
 }
 
-install_singbox() {
-# ---------- 5. 安装 sing-box ----------
-step "安装 sing-box"
-if command -v sing-box &>/dev/null || [[ -f /usr/local/bin/sb ]]; then
-    SB_VER=$(sing-box version 2>/dev/null || echo '未知版本')
-    warn "sing-box 已安装 (${SB_VER})，跳过"
-else
-    run_installer https://github.com/233boy/sing-box/raw/main/install.sh || {
-        error "sing-box 安装器失败或被取消"
-        return 1
-    }
-    if command -v sing-box &>/dev/null; then
-        info "sing-box 安装完成"
+# 233boy 将实际内核放在 /etc/sing-box/bin，PATH 中的 sing-box 通常是管理脚本。
+# 不以管理入口是否存在或安装器退出码单独判断成功；不读取或输出节点配置。
+probe_singbox_installation() {
+    SB_CORE_BIN=''
+    SB_CORE_VERSION=''
+    SB_INSTALL_STATE=missing
+    if [[ -x /etc/sing-box/bin/sing-box ]]; then
+        SB_CORE_BIN=/etc/sing-box/bin/sing-box
     else
-        error "sing-box 未检测到，所选安装未完成"
+        SB_CORE_BIN=$(type -P sing-box 2>/dev/null || true)
+    fi
+    [[ -n "$SB_CORE_BIN" ]] || return 1
+    SB_INSTALL_STATE=invalid-core
+    # 管理脚本的 version 参数不等同于直接执行内核；残留时也不调用它。
+    if [[ "$(readlink -f -- "$SB_CORE_BIN" 2>/dev/null)" == /etc/sing-box/sh/sing-box.sh ]]; then return 1; fi
+    if ! SB_CORE_VERSION=$("$SB_CORE_BIN" version 2>/dev/null); then return 1; fi
+    [[ "$SB_CORE_VERSION" == 'sing-box version '* ]] || return 1
+    SB_CORE_VERSION=${SB_CORE_VERSION%%$'\n'*}
+    SB_INSTALL_STATE=inactive
+    systemctl is-active --quiet sing-box.service || return 1
+    SB_INSTALL_STATE=healthy
+}
+
+report_singbox_problem() {
+    case "$SB_INSTALL_STATE" in
+        missing) error '未检测到可执行的 sing-box 内核，安装未完成' ;;
+        invalid-core) error 'sing-box 内核版本检查未通过，或仅留下了管理入口' ;;
+        inactive) error 'sing-box 内核可用，但 sing-box.service 未运行，安装未通过服务检查' ;;
+    esac
+    info '可在服务器上检查：systemctl status sing-box.service --no-pager'
+    info '检查配置前请保留现有节点文件；本脚本不会为修复状态而自动重装。'
+}
+
+install_singbox() {
+    step '安装 sing-box'
+    local installer_status=0
+    if probe_singbox_installation; then
+        info "sing-box 已安装（$SB_CORE_VERSION），服务运行中，跳过安装"
+        return 0
+    fi
+    if [[ "$SB_INSTALL_STATE" != missing || -e /usr/local/bin/sb || -d /etc/sing-box ]]; then
+        report_singbox_problem
         return 1
     fi
-fi
+
+    if run_installer https://github.com/233boy/sing-box/raw/main/install.sh; then
+        installer_status=0
+    else
+        installer_status=$?
+    fi
+    if probe_singbox_installation; then
+        if (( installer_status != 0 )); then
+            warn "安装器退出码为 $installer_status；实际内核和服务检查均已通过，继续初始化"
+        fi
+        info "sing-box 安装完成（$SB_CORE_VERSION），服务运行中"
+        return 0
+    fi
+    if (( installer_status != 0 )); then
+        error "sing-box 安装器退出码为 $installer_status，实际安装检查也未通过"
+    fi
+    report_singbox_problem
+    return 1
 }
 
 configure_fail2ban() {
