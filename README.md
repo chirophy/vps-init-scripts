@@ -61,11 +61,22 @@ bash vps-init.sh
 
 | 变量 | 对应任务 | 选项 |
 | --- | --- | --- |
-| `IPERF3_ACTION` | 境外 iperf3 常驻服务 | `0` 保持现状（默认）、`1` 安装并启用、`2` 停止并取消开机启动 |
-| `WATCHTOWER_ACTION` | 国内 Watchtower 自动更新 | `0` 保持现状（默认）、`1` 纳入启动服务、`2` 停止现有 Watchtower 容器 |
-| `SB_UPDATE_ACTION` | sing-box 每日定时更新 | `0` 保持现状（默认）、`1` 配置并启用、`2` 移除该更新任务，保留其他 cron 条目 |
+| `IPERF3_ACTION` | 境外 iperf3 常驻服务 | `1` 安装并启用（默认）、`2` 不启用，停止已有服务并取消开机启动 |
+| `WATCHTOWER_ACTION` | 国内 Watchtower 自动更新 | `1` 纳入启动服务（默认）、`2` 不启用，停止已有 Watchtower 容器 |
+| `SB_UPDATE_ACTION` | sing-box 每日定时更新 | `1` 配置并启用（适用时默认）、`2` 不启用，移除该更新任务，保留其他 cron 条目 |
 
-`0` 在新机器上不会启用这些后台任务，已有机器则保留原状态；要关闭以前已启用的任务，需要明确选择 `2`。检查/更新模式要求这些 ACTION 均为 `0`，启停操作使用组件模式。启用 sing-box 定时更新需要已有 `/usr/local/bin/sb`，也可同时选择安装 sing-box。iperf3 默认端口 `5201` 且无身份认证，启用后应仅向可信 IP 放行。
+新装时后台任务菜单只有以下两项，直接回车选择 `1`：
+
+```text
+1) 启用（默认）
+2) 不启用
+```
+
+检测到已有服务、容器或更新任务时，会显示当前状态，并在上述两项后增加 `0) 保持现状`。已有任务同样默认选择 `1`；明确选择 `2` 才停用，选择 `0` 则不作调整。`ACTION=0` 仍接受显式环境变量，兼容此前的自动化，但新装菜单不再展示没有实际意义的“保持现状”。
+
+sing-box 定时更新只有在已有 `/usr/local/bin/sb`，或本次选择新装 sing-box 时才默认询问并启用；只选 NextTrace、不选组件或精简版且没有已有 `sb` 时会跳过。已有健康原生内核但没有 `sb` 管理入口时也跳过；显式要求启用不适用的定时更新会在系统修改前报错。检查/更新模式不显示这些菜单，所有 ACTION 默认保持为 `0`，启停操作使用组件模式。
+
+iperf3 默认端口 `5201` 且无身份认证，默认启用常驻服务后应仅向可信 IP 放行。
 
 选择场景 5 后，可按以下序号选择服务组，多个序号用逗号分隔，例如 `1,4,6`：
 
@@ -79,7 +90,7 @@ bash vps-init.sh
 | 6 | monitoring | Uptime Kuma、Beszel |
 | 7 | notes | Memos |
 | 8 | all | 全部可选服务 |
-| 0 | none | 仅 NPM（默认，Watchtower 独立选择） |
+| 0 | none | NPM 基础服务（默认，Watchtower 独立选择且默认启用） |
 
 整合版与旧版的差异：
 
@@ -90,7 +101,7 @@ bash vps-init.sh
 - Compose 使用候选文件先校验，内容有变化才备份替换；启动验收失败时恢复原 Compose 并尝试恢复原服务配置。首次部署失败会撤回新 Compose，保留容器供排查。恢复不包含服务数据或镜像版本回退；不会自动合并手工修改的 Compose，请核对备份。
 - 国内服务根据当前选择逐一验收，默认最多等待 120 秒；缺少容器、退出、重启中、不健康或状态读取失败均返回失败。有健康检查的容器必须为 `healthy`，没有健康检查时仅确认进程为 `running`，会明确标注，不表示应用接口已可用。多副本需全部满足条件。
 - NextTrace / sing-box 安装器先完整下载并通过 Bash 语法检查，再执行；语法检查不代表远程代码可信。未固定第三方安装器及容器镜像版本，内容可能随上游更新变化。
-- 不选择某个组件不会卸载或删除它；切换服务组也不等于移除上次部署的服务。后台任务选择 `0` 同样保留现状，选择 `2` 才执行对应停用操作。
+- 不选择某个组件不会卸载或删除它；切换服务组也不等于移除上次部署的服务。适用的后台任务默认启用，选择 `2` 执行对应停用操作；已有任务选择 `0` 保留现状。
 - 检查 Debian 11+ / Ubuntu 22.04+ 及运行中的 systemd；受限容器兼容仅指 TCP 参数跳过，服务部署仍需要 systemd。无终端时必须显式提供场景。
 
 ### 环境变量与无人值守选择
@@ -108,7 +119,7 @@ bash vps-init.sh
 | `INSTALL_STARSHIP` | 默认 `1`；`0` 跳过 Starship |
 | `RESET_STARSHIP_CONFIG` | 默认 `0` 保留已有主题；`1` 备份后重置 |
 | `IPERF3_PORT` | 境外场景默认 `5201`，范围 1024–65535 |
-| `IPERF3_ACTION` / `WATCHTOWER_ACTION` / `SB_UPDATE_ACTION` | 分别控制对应后台任务，`0` 保持（默认）、`1` 启用、`2` 停用 |
+| `IPERF3_ACTION` / `WATCHTOWER_ACTION` / `SB_UPDATE_ACTION` | 安装模式中适用的任务默认 `1` 启用，`2` 不启用/停用已有任务；显式 `0` 保持。检查/更新模式默认 `0`，不适用的任务也为 `0` |
 | `SERVICE_WAIT_TIMEOUT` | 国内服务启动验收等待秒数，默认 `120`，范围 1–3600；状态检查立即报告结果 |
 | `HOMEPAGE_HOST` | 选中 `tools` 时必须提供或交互输入有效 DNS 域名 |
 | `STACK_DIR` | 国内部署目录，默认 `/opt/stacks`，必须是非根目录的绝对路径 |
@@ -121,7 +132,7 @@ VPS_SCENE=3 VPS_COMPONENTS=2 bash vps-init.sh --plan
 # 国内：仅部署 RSS 和监控组，不需要 Homepage 域名；先只预览
 VPS_SCENE=5 SERVICE_PROFILES=4,6 bash vps-init.sh --plan
 
-# 仅补装 NextTrace，同时启用 iperf3，不执行全系统升级；先预览
+# 仅补装 NextTrace，同时启用 iperf3，不配置 sing-box 更新，不执行全系统升级；先预览
 VPS_MODE=components VPS_SCENE=1 VPS_COMPONENTS=2 IPERF3_ACTION=1 bash vps-init.sh --plan
 
 # 查看现有 RSS 服务组的状态（目标 VPS 上运行）
@@ -228,7 +239,7 @@ bash tests/reliability-test.sh
 bash tests/singbox-install-test.sh
 ```
 
-新增隔离测试覆盖五种场景和四种模式、菜单映射、公共步骤只执行一次、只读预览、TCP 差异、Compose 令牌复用与失败恢复、后台任务独立启停、健康状态解析、无变化跳过及原有自动更新策略保留。sing-box 专项测试覆盖成功但非零退出、退出零但内核缺失/服务未运行、已有实例跳过和节点文件保留。Docker / systemd / sysctl 等操作使用替身，不能替代真实 Debian / Ubuntu 隔离环境中的部署验收。
+新增隔离测试覆盖五种场景和四种模式、菜单映射、真实空行输入默认值、新装/已有后台任务菜单、只读状态探测、定时更新适用条件、公共步骤只执行一次、只读预览、TCP 差异、Compose 令牌复用与失败恢复、后台任务独立启停、健康状态解析、无变化跳过及原有自动更新策略保留。sing-box 专项测试覆盖成功但非零退出、退出零但内核缺失/服务未运行、已有实例跳过和节点文件保留。Docker / systemd / sysctl 等操作使用替身，不能替代真实 Debian / Ubuntu 隔离环境中的部署验收。
 
 ## 国内 VPS 数据与凭据
 

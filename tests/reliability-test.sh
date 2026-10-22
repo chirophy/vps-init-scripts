@@ -132,10 +132,14 @@ done
 printf '[PASS] 四种模式的边界及组件模式禁止系统升级\n'
 
 (
-    VPS_MODE=full VPS_SCENE=hk
+    VPS_MODE=full VPS_SCENE=hk INSTALL_SING_BOX=1
     unset IPERF3_ACTION SB_UPDATE_ACTION WATCHTOWER_ACTION
-    select_background_actions
-    [[ "$IPERF3_ACTION:$SB_UPDATE_ACTION:$WATCHTOWER_ACTION" == 0:0:0 ]] || fail '默认启用了后台任务'
+    probe_background_state() { BACKGROUND_PRESENT=0; BACKGROUND_STATE='未配置'; }
+    sb_update_supported() { return 0; }
+    select_background_actions > "$test_dir/background-menu"
+    [[ "$IPERF3_ACTION:$SB_UPDATE_ACTION:$WATCHTOWER_ACTION" == 1:1:0 ]] || fail '适用的后台任务没有默认启用'
+    ! grep -q '0) 保持现状' "$test_dir/background-menu" || fail '未配置任务仍显示保持现状'
+    [[ $(sed -n 's/^[[:space:]]*\([0-9]\)).*/\1/p' "$test_dir/background-menu" | paste -sd, -) == 1,2,1,2 ]] || fail '新装菜单不是启用/不启用两项'
     configure_iperf3() { echo iperf >> "$test_dir/background"; }
     configure_sb_update() { echo sb >> "$test_dir/background"; }
     systemctl() { echo "$*" >> "$test_dir/background"; }
@@ -143,21 +147,100 @@ printf '[PASS] 四种模式的边界及组件模式禁止系统升级\n'
     set_sb_update_cron() { echo "cron-$1" >> "$test_dir/background"; }
     : > "$test_dir/background"
     apply_background_actions
-    [[ ! -s "$test_dir/background" ]] || fail '保持现状仍修改了后台任务'
-    IPERF3_ACTION=1 SB_UPDATE_ACTION=1
+    grep -qx iperf "$test_dir/background" && grep -qx sb "$test_dir/background" || fail '默认选项没有配置后台任务'
+    : > "$test_dir/background"
+    IPERF3_ACTION=0 SB_UPDATE_ACTION=0
     apply_background_actions
-    grep -qx iperf "$test_dir/background" && grep -qx sb "$test_dir/background" || fail '后台任务不能独立启用'
+    [[ ! -s "$test_dir/background" ]] || fail '显式保持现状仍修改了后台任务'
     IPERF3_ACTION=2 SB_UPDATE_ACTION=2
     apply_background_actions
     grep -qx 'disable --now iperf3-server.service' "$test_dir/background" || fail 'iperf3 无法独立停用'
     grep -qx cron-0 "$test_dir/background" || fail '定时更新无法独立停用'
-    VPS_SCENE=domestic SERVICE_PROFILES=0 WATCHTOWER_ACTION=1
+    VPS_SCENE=domestic SERVICE_PROFILES=0
+    unset WATCHTOWER_ACTION
+    select_background_actions > "$test_dir/background-menu"
+    [[ "$WATCHTOWER_ACTION" == 1 ]] || fail 'Watchtower 没有默认启用'
     select_services > "$test_dir/output"
     [[ "${COMPOSE_PROFILE_ARGS[*]}" == '--profile watchtower' ]] || fail 'Watchtower 没有独立选择'
     WATCHTOWER_ACTION=0 select_services > "$test_dir/output"
-    [[ ${#COMPOSE_PROFILE_ARGS[@]} == 0 ]] || fail 'Watchtower 默认启用'
+    [[ ${#COMPOSE_PROFILE_ARGS[@]} == 0 ]] || fail '显式保持现状仍新增 Watchtower profile'
+    probe_background_state() { BACKGROUND_PRESENT=1; BACKGROUND_STATE='运行中'; }
+    unset WATCHTOWER_ACTION
+    select_background_actions > "$test_dir/background-menu"
+    grep -q '当前状态：运行中' "$test_dir/background-menu" || fail '没有显示已有任务的状态'
+    grep -q '0) 保持现状' "$test_dir/background-menu" || fail '已有任务不能保持现状'
+    [[ "$WATCHTOWER_ACTION" == 1 ]] || fail '已有任务默认选项不是启用'
 )
-printf '[PASS] 后台任务默认保持、独立启停与 Watchtower profile\n'
+printf '[PASS] 后台任务默认启用、首次/已有菜单、显式保持及独立启停\n'
+
+(
+    unit_present=0 unit_active=active unit_enabled=enabled watch_present=0 watch_state=running
+    cron_content_fixture=''
+    systemctl() {
+        case "$*" in
+            'cat iperf3-server.service') [[ "$unit_present" == 1 ]] ;;
+            'is-active iperf3-server.service') printf '%s\n' "$unit_active" ;;
+            'is-enabled iperf3-server.service') printf '%s\n' "$unit_enabled" ;;
+            *) fail '意外的服务探测' ;;
+        esac
+    }
+    crontab() { [[ "$1" == -l ]] || fail '状态检测修改了 cron'; printf '%s\n' "$cron_content_fixture"; }
+    docker() { [[ "$*" == "inspect --format {{.State.Status}} watchtower" ]] || fail '意外的 Docker 操作'; [[ "$watch_present" == 1 ]] || return 1; printf '%s\n' "$watch_state"; }
+    probe_background_state IPERF3_ACTION
+    [[ "$BACKGROUND_PRESENT" == 0 ]] || fail '不存在的 iperf3 被识别为已有任务'
+    unit_present=1
+    probe_background_state IPERF3_ACTION
+    [[ "$BACKGROUND_PRESENT:$BACKGROUND_STATE" == '1:运行中，已设置开机启动' ]] || fail 'iperf3 运行状态识别错误'
+    unit_active=inactive unit_enabled=disabled
+    probe_background_state IPERF3_ACTION
+    [[ "$BACKGROUND_STATE" == '未运行，未设置开机启动' ]] || fail 'iperf3 停用状态识别错误'
+    cron_content_fixture='0 4 * * * /usr/local/bin/sb-auto-update.sh'
+    probe_background_state SB_UPDATE_ACTION
+    [[ "$BACKGROUND_PRESENT:$BACKGROUND_STATE" == '1:已配置定时更新' ]] || fail '未识别已有定时更新'
+    probe_background_state WATCHTOWER_ACTION
+    [[ "$BACKGROUND_PRESENT" == 0 ]] || fail '不存在的 Watchtower 被识别为已有任务'
+    watch_present=1
+    probe_background_state WATCHTOWER_ACTION
+    [[ "$BACKGROUND_PRESENT:$BACKGROUND_STATE" == '1:运行中' ]] || fail 'Watchtower 运行状态识别错误'
+    watch_state=exited
+    probe_background_state WATCHTOWER_ACTION
+    [[ "$BACKGROUND_STATE" == '已配置，未运行' ]] || fail 'Watchtower 停止状态识别错误'
+)
+(
+    definition=$(declare -f sb_update_supported)
+    printf -v fixture_manager '%q' "$test_dir/sb-manager"
+    definition=${definition//\/usr\/local\/bin\/sb/$fixture_manager}
+    eval "$definition"
+    core_healthy=0
+    probe_singbox_installation() { [[ "$core_healthy" == 1 ]]; }
+    INSTALL_SING_BOX=0
+    if sb_update_supported; then fail '未选择 sing-box 仍默认配置定时更新'; fi
+    INSTALL_SING_BOX=1
+    sb_update_supported || fail '新装 sing-box 没有提供默认启用选项'
+    core_healthy=1
+    if sb_update_supported; then fail '原生内核缺少管理器仍提供定时更新'; fi
+    : > "$test_dir/sb-manager"
+    sb_update_supported || fail '没有识别已有 sb 管理入口'
+)
+printf '[PASS] 已有任务只读探测及 sing-box 更新选项适用条件\n'
+
+(
+    VPS_MODE=full VPS_SCENE=hk INSTALL_SING_BOX=0
+    sb_update_supported() { return 1; }
+    probe_background_state() { BACKGROUND_PRESENT=0; BACKGROUND_STATE='未配置'; }
+    unset IPERF3_ACTION SB_UPDATE_ACTION WATCHTOWER_ACTION
+    select_background_actions > "$test_dir/background-menu"
+    [[ "$IPERF3_ACTION:$SB_UPDATE_ACTION" == 1:0 ]] || fail '不适用的 sing-box 定时更新仍默认启用'
+    ! grep -q '^sing-box 定时更新：' "$test_dir/background-menu" || fail '不适用时仍显示定时更新菜单'
+    if (SB_UPDATE_ACTION=1; select_background_actions) > "$test_dir/output" 2>&1; then fail '接受了不适用的定时更新启用请求'; fi
+    VPS_MODE=status
+    probe_background_state() { fail '检查模式探测并选择后台启停选项'; }
+    unset IPERF3_ACTION SB_UPDATE_ACTION WATCHTOWER_ACTION
+    select_background_actions > "$test_dir/background-menu"
+    [[ "$IPERF3_ACTION:$SB_UPDATE_ACTION:$WATCHTOWER_ACTION" == 0:0:0 ]] || fail '检查模式默认修改后台任务'
+    [[ ! -s "$test_dir/background-menu" ]] || fail '检查模式显示了启停菜单'
+)
+printf '[PASS] 不适用的更新任务跳过、显式错误请求拦截及只读模式保持\n'
 
 # cron 修改保留其他条目和注释，内容不变时不写入。
 (

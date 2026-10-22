@@ -26,6 +26,21 @@ IPERF3_ACTION=0 WATCHTOWER_ACTION=0 SB_UPDATE_ACTION=0 SERVICE_WAIT_TIMEOUT=1
     unset VPS_COMPONENTS
     select_components > "$test_dir/menu"
     [[ "$VPS_COMPONENTS:$INSTALL_NEXTTRACE:$INSTALL_SING_BOX" == 1:1:1 ]] || fail '组件直接回车没有选择 NextTrace + sing-box'
+    probe_background_state() { BACKGROUND_PRESENT=0; BACKGROUND_STATE='未配置'; }
+    sb_update_supported() { return 0; }
+    unset IPERF3_ACTION SB_UPDATE_ACTION WATCHTOWER_ACTION
+    select_background_actions > "$test_dir/background-menu"
+    [[ "$IPERF3_ACTION:$SB_UPDATE_ACTION:$WATCHTOWER_ACTION" == 1:1:0 ]] || fail '后台任务直接回车未默认启用'
+    ! grep -q '0) 保持现状' "$test_dir/background-menu" || fail '新装菜单仍显示保持现状'
+    VPS_SCENE=domestic
+    unset IPERF3_ACTION SB_UPDATE_ACTION WATCHTOWER_ACTION
+    select_background_actions > "$test_dir/background-menu"
+    [[ "$WATCHTOWER_ACTION" == 1 ]] || fail 'Watchtower 直接回车未默认启用'
+    printf '2\n' > "$test_dir/tty-input"
+    unset WATCHTOWER_ACTION
+    select_background_actions > "$test_dir/background-menu"
+    [[ "$WATCHTOWER_ACTION" == 2 ]] || fail '后台任务不启用选项未生效'
+    VPS_SCENE=hk
     printf '2\n' > "$test_dir/tty-input"
     unset VPS_MODE
     select_mode > "$test_dir/menu"

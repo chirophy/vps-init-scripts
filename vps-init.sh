@@ -261,18 +261,21 @@ select_mode() {
     esac
 }
 
-# 0 保持已有状态（新机器默认不启用），1 启用，2 停用；安装与自动更新分开选择。
+# 安装模式默认启用适用的后台任务；已有任务才展示“保持现状”。
+# ACTION=0 仍接受显式环境变量，兼容旧自动化；检查/更新模式始终不调整后台任务。
 
 select_background_actions() {
     if [[ "$VPS_MODE" == full || "$VPS_MODE" == components ]]; then
         if [[ "$VPS_SCENE" == domestic ]]; then
-            show_background_menu 'Watchtower 自动更新'
-            require_choice WATCHTOWER_ACTION '请输入选项序号（默认 0）: ' 0
+            choose_background_action WATCHTOWER_ACTION 'Watchtower 自动更新'
         else
-            show_background_menu 'iperf3 常驻服务'
-            require_choice IPERF3_ACTION '请输入选项序号（默认 0）: ' 0
-            show_background_menu 'sing-box 定时更新'
-            require_choice SB_UPDATE_ACTION '请输入选项序号（默认 0）: ' 0
+            choose_background_action IPERF3_ACTION 'iperf3 常驻服务'
+            if sb_update_supported; then
+                choose_background_action SB_UPDATE_ACTION 'sing-box 定时更新'
+            else
+                [[ "${SB_UPDATE_ACTION:-0}" != 1 ]] || die '启用定时更新需要已有 sb 管理脚本，或本次选择新装 sing-box'
+                info '本次未选择新装 sing-box，或已有内核缺少 sb 管理入口，跳过定时更新选择'
+            fi
         fi
     fi
     IPERF3_ACTION=${IPERF3_ACTION:-0}
@@ -280,18 +283,78 @@ select_background_actions() {
     SB_UPDATE_ACTION=${SB_UPDATE_ACTION:-0}
 }
 
+sb_update_supported() {
+    [[ ! -f /usr/local/bin/sb ]] || return 0
+    [[ "${INSTALL_SING_BOX:-0}" == 1 ]] || return 1
+    # 原生内核已安装且运行、但没有 233boy 管理入口时，不配置不适用的 sb 定时任务。
+    if probe_singbox_installation; then return 1; fi
+    return 0
+}
+
+probe_background_state() {
+    BACKGROUND_PRESENT=0
+    BACKGROUND_STATE='未配置'
+    local current enabled cron_content
+    case "$1" in
+        IPERF3_ACTION)
+            if systemctl cat iperf3-server.service >/dev/null 2>&1; then
+                BACKGROUND_PRESENT=1
+                current=$(systemctl is-active iperf3-server.service 2>/dev/null || true)
+                enabled=$(systemctl is-enabled iperf3-server.service 2>/dev/null || true)
+                if [[ "$current" == active ]]; then BACKGROUND_STATE='运行中'; else BACKGROUND_STATE='未运行'; fi
+                if [[ "$enabled" == enabled ]]; then BACKGROUND_STATE+='，已设置开机启动'; else BACKGROUND_STATE+='，未设置开机启动'; fi
+            fi
+            ;;
+        SB_UPDATE_ACTION)
+            cron_content=''
+            if command -v crontab >/dev/null 2>&1; then cron_content=$(crontab -l 2>/dev/null || true); fi
+            if awk '$0 !~ /^[[:space:]]*#/ && $0 ~ /(^|[[:space:]])\/usr\/local\/bin\/sb-auto-update\.sh([[:space:]]|$)/ {found=1} END {exit !found}' <<< "$cron_content"; then
+                BACKGROUND_PRESENT=1
+                BACKGROUND_STATE='已配置定时更新'
+            elif [[ -f /usr/local/bin/sb-auto-update.sh ]]; then
+                BACKGROUND_PRESENT=1
+                BACKGROUND_STATE='更新脚本已存在，未配置定时任务'
+            fi
+            ;;
+        WATCHTOWER_ACTION)
+            if command -v docker >/dev/null 2>&1; then
+                if current=$(docker inspect --format '{{.State.Status}}' watchtower 2>/dev/null); then
+                    BACKGROUND_PRESENT=1
+                    case "$current" in
+                        running) BACKGROUND_STATE='运行中' ;;
+                        restarting) BACKGROUND_STATE='正在重启' ;;
+                        *) BACKGROUND_STATE='已配置，未运行' ;;
+                    esac
+                fi
+            fi
+            ;;
+    esac
+}
+
+choose_background_action() {
+    local variable=$1 label=$2
+    probe_background_state "$variable"
+    show_background_menu "$label" "$BACKGROUND_PRESENT" "$BACKGROUND_STATE"
+    require_choice "$variable" '请输入选项序号（默认 1）: ' 1
+}
+
 show_background_menu() {
     printf '%s：\n' "$1"
-    echo '  0) 保持现状（默认）'
-    echo '  1) 启用'
-    echo '  2) 停用'
+    if [[ "${2:-0}" == 1 ]]; then printf '  当前状态：%s\n' "$3"; fi
+    echo '  1) 启用（默认）'
+    if [[ "${2:-0}" == 1 ]]; then
+        echo '  2) 不启用（停用已有任务）'
+        echo '  0) 保持现状'
+    else
+        echo '  2) 不启用'
+    fi
 }
 
 background_action_label() {
     case "$1" in
         0) printf '保持现状' ;;
         1) printf '启用' ;;
-        2) printf '停用' ;;
+        2) printf '不启用（已有任务将停用）' ;;
     esac
 }
 
@@ -429,7 +492,7 @@ print_plan() {
         info "TCP 参数方案：$VPS_SCENE；fail2ban；iperf3=$(background_action_label "$IPERF3_ACTION")（端口 $IPERF3_PORT）"
         info "安装 NextTrace=$INSTALL_NEXTTRACE，安装 sing-box=$INSTALL_SING_BOX，定时更新=$(background_action_label "$SB_UPDATE_ACTION")"
     fi
-    info '未选择的组件不新装、不卸载，已有服务和定时任务不会因此被移除。'
+    info '组件选择不卸载已有软件；后台任务选择“不启用”会停用对应的已有任务。'
 }
 
 preflight() {
@@ -1628,9 +1691,10 @@ show_help() {
   3) 仅 sing-box
   0) 不选择
 后台选项（IPERF3_ACTION / WATCHTOWER_ACTION / SB_UPDATE_ACTION）：
-  0) 保持现状（默认）
-  1) 启用
-  2) 停用
+  1) 启用（安装模式中适用的任务默认选择）
+  2) 不启用（已有任务将停用）
+  0) 保持现状（已有任务时显示，也接受显式环境变量）
+新装时菜单只显示上述前两项；检查/更新模式不显示后台菜单，ACTION 默认保持为 0。
 国内服务组（SERVICE_PROFILES，支持逗号多选，也接受对应 profile 名称）：
   1) tools：Homepage + IT-Tools
   2) code：Gitea
