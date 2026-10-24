@@ -212,7 +212,7 @@ valid_hostname() {
     local label
     local -a labels
 
-    (( ${#hostname} >= 1 && ${#hostname} <= 253 )) || return 1
+    (( ${#hostname} >= 1 && ${#hostname} <= 64 )) || return 1
     [[ "$hostname" != .* && "$hostname" != *. && "$hostname" != *".."* ]] || return 1
 
     IFS='.' read -r -a labels <<< "$hostname"
@@ -307,8 +307,11 @@ probe_background_state() {
             ;;
         SB_UPDATE_ACTION)
             cron_content=''
-            if command -v crontab >/dev/null 2>&1; then cron_content=$(crontab -l 2>/dev/null || true); fi
-            if awk '$0 !~ /^[[:space:]]*#/ && $0 ~ /(^|[[:space:]])\/usr\/local\/bin\/sb-auto-update\.sh([[:space:]]|$)/ {found=1} END {exit !found}' <<< "$cron_content"; then
+            if command -v crontab >/dev/null 2>&1; then
+                if ! read_root_crontab; then BACKGROUND_PRESENT=1; BACKGROUND_STATE='无法读取 crontab，任务状态未知'; return 0; fi
+                cron_content=$ROOT_CRONTAB_CONTENT
+            fi
+            if [[ -n "$(filter_sb_update_cron 1 <<< "$cron_content")" ]]; then
                 BACKGROUND_PRESENT=1
                 BACKGROUND_STATE='已配置定时更新'
             elif [[ -f /usr/local/bin/sb-auto-update.sh ]]; then
@@ -462,16 +465,30 @@ validate_options() {
             [[ "${!variable:-0}" == 0 ]] || die '检查/更新模式不调整后台策略，请将 ACTION 设为 0，启停请使用组件模式'
         fi
     done
-    SERVICE_WAIT_TIMEOUT=${SERVICE_WAIT_TIMEOUT:-120}
-    [[ "$SERVICE_WAIT_TIMEOUT" =~ ^[1-9][0-9]{0,3}$ ]] && (( SERVICE_WAIT_TIMEOUT <= 3600 )) || die 'SERVICE_WAIT_TIMEOUT 必须为 1-3600 秒'
+    SERVICE_WAIT_TIMEOUT=${SERVICE_WAIT_TIMEOUT:-300}
+    if [[ ! "$SERVICE_WAIT_TIMEOUT" =~ ^[1-9][0-9]{0,3}$ ]] || (( SERVICE_WAIT_TIMEOUT > 3600 )); then die 'SERVICE_WAIT_TIMEOUT 必须为 1-3600 秒'; fi
     if [[ "$VPS_SCENE" != domestic ]]; then
         IPERF3_PORT=${IPERF3_PORT:-5201}
-        [[ "$IPERF3_PORT" =~ ^[1-9][0-9]{3,4}$ ]] && (( IPERF3_PORT >= 1024 && IPERF3_PORT <= 65535 )) || die 'IPERF3_PORT 必须是 1024-65535 的整数'
+        if [[ ! "$IPERF3_PORT" =~ ^[1-9][0-9]{3,4}$ ]] || (( IPERF3_PORT < 1024 || IPERF3_PORT > 65535 )); then die 'IPERF3_PORT 必须是 1024-65535 的整数'; fi
     fi
     STACK_DIR=${STACK_DIR:-/opt/stacks}
     [[ "$STACK_DIR" == /* && "$STACK_DIR" != / && "$STACK_DIR" != *$'\n'* ]] || die 'STACK_DIR 必须为非根目录的绝对路径'
     # 默认使用原始镜像源；由部署者提供可信的镜像站 JSON 数组。
     DOCKER_MIRRORS=${DOCKER_MIRRORS:-[]}
+    if [[ -z "${MEMOS_IMAGE:-}" && -f "$STACK_DIR/docker-compose.yml" ]]; then
+        MEMOS_IMAGE=$(awk '/^  memos:/ {inside=1; next} inside && /^    image:/ {print $2; exit}' "$STACK_DIR/docker-compose.yml")
+        if [[ "$MEMOS_IMAGE" == neosmemo/memos:latest ]]; then
+            if [[ -d "$STACK_DIR/memos/data" ]] && find "$STACK_DIR/memos/data" -type f -print -quit | grep -q .; then
+                if [[ "${VPS_MODE:-full}" != status && "${VPS_MODE:-full}" != update && -n "${ENABLED_PROFILES[notes]+x}" ]]; then
+                    die '已有旧版 Memos 数据；请先备份并核对升级路径，再显式设置 MEMOS_IMAGE（早于 0.22 需先运行 0.25.3，再升级 0.31.0）'
+                fi
+            else
+                MEMOS_IMAGE=neosmemo/memos:0.31.0
+            fi
+        fi
+    fi
+    MEMOS_IMAGE=${MEMOS_IMAGE:-neosmemo/memos:0.31.0}
+    [[ "$MEMOS_IMAGE" =~ ^[a-zA-Z0-9][a-zA-Z0-9./:@_-]+$ ]] || die 'MEMOS_IMAGE 必须为有效镜像引用，不含空白或 Shell 字符'
 }
 
 print_plan() {
@@ -519,20 +536,27 @@ collect_hostname() {
 
 collect_homepage() {
     HOMEPAGE_HOST=${HOMEPAGE_HOST:-}
+    # 兼容本脚本此前生成的 Compose；追加其他服务组也必须保留已有域名。
+    if [[ -z "$HOMEPAGE_HOST" && -f "${STACK_DIR:-/opt/stacks}/docker-compose.yml" ]]; then
+        HOMEPAGE_HOST=$(awk '/^[[:space:]]*- HOMEPAGE_ALLOWED_HOSTS=/ {
+            sub(/^[[:space:]]*- HOMEPAGE_ALLOWED_HOSTS=/, ""); print; exit
+        }' "${STACK_DIR:-/opt/stacks}/docker-compose.yml")
+    fi
     if [[ -n "${ENABLED_PROFILES[tools]+x}" ]]; then
         require_choice HOMEPAGE_HOST '请输入 Homepage 域名（如 nav.example.com）: '
         is_valid_domain "$HOMEPAGE_HOST" || die 'Homepage 仅允许有效 DNS 域名，不含协议、端口、路径或通配符'
     else
         # 未启用 tools 时不要求私人域名；将来启用前应重新运行并指定域名。
-        HOMEPAGE_HOST=nav.example.com
+        HOMEPAGE_HOST=${HOMEPAGE_HOST:-nav.example.com}
     fi
+    is_valid_domain "$HOMEPAGE_HOST" || die '已有 Homepage 域名无法识别，请通过 HOMEPAGE_HOST 指定有效域名'
 }
 
 backup_file() {
     local target=$1 backup
     if [[ -f "$target" ]]; then
-        backup=$(mktemp "${target}.bak.$(date +%Y%m%d%H%M%S).XXXXXX")
-        cp -a -- "$target" "$backup"
+        backup=$(mktemp "${target}.bak.$(date +%Y%m%d%H%M%S).XXXXXX") || return 1
+        cp -a -- "$target" "$backup" || { rm -f -- "$backup"; return 1; }
     fi
 }
 
@@ -540,9 +564,11 @@ backup_file() {
 apply_service_files() {
     local service=$1 validator=$2 enable_service=$3
     shift 3
-    local candidate target backup index original_active=0 changed=0
-    local -a targets=() backups=()
+    local candidate target backup index original_active=0 original_enabled=0 changed=0
+    local -a targets=() backups=() candidates=()
     systemctl is-active --quiet "$service" && original_active=1
+    systemctl is-enabled --quiet "$service" && original_enabled=1
+    # 所有备份成功后才替换任何目标，避免第二份备份失败留下半份配置。
     while (( $# )); do
         candidate=$1 target=$2; shift 2
         if cmp -s -- "$candidate" "$target"; then
@@ -552,9 +578,12 @@ apply_service_files() {
         backup=''
         if [[ -e "$target" ]]; then
             backup=$(mktemp "${target}.bak.$(date +%Y%m%d%H%M%S).XXXXXX") || return 1
-            cp -a -- "$target" "$backup" || return 1
+            cp -a -- "$target" "$backup" || { rm -f -- "$backup"; return 1; }
         fi
-        targets+=("$target"); backups+=("$backup")
+        targets+=("$target"); backups+=("$backup"); candidates+=("$candidate")
+    done
+    for index in "${!targets[@]}"; do
+        candidate=${candidates[index]} target=${targets[index]}
         if ! install -m 0644 -- "$candidate" "$target"; then
             rm -f -- "$candidate"
             restore_service_files
@@ -570,24 +599,32 @@ apply_service_files() {
     fi
     if (( changed == 1 || original_active == 0 )); then
         if [[ "$service" == iperf3-server.service ]]; then systemctl daemon-reload || { restore_service_files; return 1; }; fi
-        if ! systemctl restart "$service" || ! systemctl is-active --quiet "$service"; then
+        if ! systemctl restart "$service" || ! service_is_ready "$service"; then
             error "$service 启动失败，恢复原配置和运行状态"
-            restore_service_files
-            if (( original_active )); then
-                if ! systemctl restart "$service" || ! systemctl is-active --quiet "$service"; then
-                    error "$service 原配置已恢复，但服务恢复失败，请检查 journalctl -u $service"
-                fi
-            else
-                systemctl stop "$service" || error "$service 停止失败，请手动检查"
-            fi
+            restore_service_state
             return 1
         fi
     else
         info "$service 配置未变化且已运行，跳过备份、写入和重启"
     fi
     if [[ "$enable_service" == 1 ]] && ! systemctl is-enabled --quiet "$service"; then
-        systemctl enable "$service" || return 1
+        if ! systemctl enable "$service"; then
+            restore_service_state
+            return 1
+        fi
     fi
+}
+
+restore_service_state() {
+    restore_service_files || return 1
+    if (( original_active )); then
+        if ! systemctl restart "$service" || ! systemctl is-active --quiet "$service"; then
+            error "$service 原配置已恢复，但服务恢复失败，请检查 journalctl -u $service"; return 1
+        fi
+    else
+        systemctl stop "$service" || return 1
+    fi
+    if (( original_enabled == 0 )); then systemctl disable "$service" || return 1; fi
 }
 
 # 使用 apply_service_files 的局部数组（Bash 动态作用域），不接触未纳入事务的文件。
@@ -610,13 +647,25 @@ validate_fail2ban() { fail2ban-client -t; }
 validate_apt() { apt-config dump >/dev/null; }
 validate_docker() { dockerd --validate --config-file /etc/docker/daemon.json; }
 
+service_is_ready() {
+    local service=$1 pid listeners attempt
+    systemctl is-active --quiet "$service" || return 1
+    [[ "$service" == iperf3-server.service ]] || return 0
+    for attempt in {1..10}; do
+        pid=$(systemctl show --property=MainPID --value "$service") || return 1
+        listeners=$(ss -H -ltnp "sport = :${IPERF3_PORT}") || return 1
+        if [[ "$pid" =~ ^[1-9][0-9]*$ && "$listeners" == *"pid=$pid,"* ]]; then return 0; fi
+        sleep 1
+    done
+    error 'iperf3 未建立属于目标服务的 TCP 监听'
+    return 1
+}
+
 install_file_if_changed() {
     local candidate=$1 target=$2 mode=${3:-0644}
-    FILE_CHANGED=0
     if ! cmp -s -- "$candidate" "$target"; then
         backup_file "$target" || return 1
         install -m "$mode" -- "$candidate" "$target" || return 1
-        FILE_CHANGED=1
     fi
     rm -f -- "$candidate"
 }
@@ -646,12 +695,11 @@ step "修改主机名"
 
     # FQDN 在前、短主机名在后，避免 sudo 报 "unable to resolve host"。
     candidate=$(mktemp /etc/.vps-hosts.XXXXXX)
-    if grep -q '^127\.0\.1\.1' /etc/hosts; then
-        sed "s/^127\.0\.1\.1.*/127.0.1.1\t${HOSTS_NAMES}/" /etc/hosts > "$candidate"
-    else
-        cat /etc/hosts > "$candidate"
-        printf '127.0.1.1\t%s\n' "$HOSTS_NAMES" >> "$candidate"
-    fi
+    awk -v names="$HOSTS_NAMES" '
+        $1 == "127.0.1.1" { if (!found++) print "127.0.1.1\t" names; next }
+        { print }
+        END { if (!found) print "127.0.1.1\t" names }
+    ' /etc/hosts > "$candidate"
     install_file_if_changed "$candidate" /etc/hosts
     info "主机名已设置为: $NEW_HOSTNAME（/etc/hosts 已同步）"
 }
@@ -667,7 +715,7 @@ case "${UPGRADE_SYSTEM:-1}" in
     0|1) ;;
     *) error "UPGRADE_SYSTEM 仅支持 0 或 1"; exit 1 ;;
 esac
-if ! apt-get update; then
+if ! apt-get update -o APT::Update::Error-Mode=any; then
     error "软件包索引更新失败，停止初始化；请解决 APT 错误后重试"
     exit 1
 fi
@@ -686,7 +734,7 @@ if [[ "$VPS_SCENE" == domestic ]]; then
     apt-get install -y gnupg jq python3
 else
     if [[ "${VPS_MODE:-full}" == full ]]; then apt-get install -y fail2ban python3-systemd kmod; fi
-    if [[ "${IPERF3_ACTION:-0}" == 1 ]]; then apt-get install -y iperf3; fi
+    if [[ "${IPERF3_ACTION:-0}" == 1 ]]; then apt-get install -y iperf3 iproute2; fi
     if [[ "${SB_UPDATE_ACTION:-0}" == 1 ]]; then apt-get install -y cron; fi
 fi
 info "系统更新及基础工具安装完成"
@@ -845,6 +893,16 @@ if [[ ! "$IPERF3_PORT" =~ ^[1-9][0-9]{3,4}$ ]] || (( IPERF3_PORT < 1024 || IPERF
     exit 1
 fi
 
+local listeners current_pid
+listeners=$(ss -H -ltnp "sport = :${IPERF3_PORT}") || return 1
+current_pid=$(systemctl show --property=MainPID --value iperf3-server.service 2>/dev/null || true)
+if [[ -n "$listeners" ]]; then
+    if [[ ! "$current_pid" =~ ^[1-9][0-9]*$ ]] || grep -qv "pid=${current_pid}," <<< "$listeners"; then
+        error "端口 $IPERF3_PORT 已被其他进程占用（可能是 iperf3.service），请换用 IPERF3_PORT 或先处理已有服务"
+        return 1
+    fi
+fi
+
 local candidate
 candidate=$(mktemp /etc/systemd/system/.iperf3.XXXXXX)
 cat > "$candidate" << EOF
@@ -916,7 +974,7 @@ probe_singbox_installation() {
     SB_INSTALL_STATE=invalid-core
     # 管理脚本的 version 参数不等同于直接执行内核；残留时也不调用它。
     if [[ "$(readlink -f -- "$SB_CORE_BIN" 2>/dev/null)" == /etc/sing-box/sh/sing-box.sh ]]; then return 1; fi
-    if ! SB_CORE_VERSION=$("$SB_CORE_BIN" version 2>/dev/null); then return 1; fi
+    if ! SB_CORE_VERSION=$(timeout --kill-after=5s 10 "$SB_CORE_BIN" version 2>/dev/null); then return 1; fi
     [[ "$SB_CORE_VERSION" == 'sing-box version '* ]] || return 1
     SB_CORE_VERSION=${SB_CORE_VERSION%%$'\n'*}
     SB_INSTALL_STATE=inactive
@@ -1007,89 +1065,94 @@ apply_service_files fail2ban validate_fail2ban 1 \
 info "fail2ban 已配置并启动（SSH 递增封禁，最长 7 天）"
 }
 
-configure_sb_update() {
-# ---------- 7. 构建 sing-box 自动更新脚本 ----------
-step "构建 sing-box 自动更新脚本"
+# 手动更新和定时任务共享锁、超时与更新后的服务验收。
+acquire_sb_update_lock() {
+    exec 9>/run/lock/sb-auto-update.lock || return 1
+    local result=0
+    flock -n -E 75 9 || result=$?
+    if (( result == 75 )); then return 75; fi
+    if (( result != 0 )); then error '无法取得 sing-box 更新锁'; return 1; fi
+}
 
-if [[ -f /usr/local/bin/sb ]]; then
-    local candidate
-    candidate=$(mktemp /usr/local/bin/.sb-update.XXXXXX)
-    cat > "$candidate" << 'SCRIPT_EOF'
-#!/bin/bash
-set -uo pipefail
-
-# sing-box 自动更新脚本
-# 更新顺序：脚本 -> 内核 -> caddy（如有）
-
-LOG_FILE="/var/log/sb-update.log"
-LOCK_FILE="/run/lock/sb-auto-update.lock"
-SB_BIN="/usr/local/bin/sb"
-MAX_LOG_BYTES=$((5 * 1024 * 1024))
-
-rotate_log() {
-    local log_size=0
-    if [[ -f "$LOG_FILE" ]]; then
-        log_size=$(stat -c '%s' "$LOG_FILE" 2>/dev/null || echo 0)
-        if (( log_size >= MAX_LOG_BYTES )); then
-            mv -f "$LOG_FILE" "${LOG_FILE}.1"
+wait_singbox_ready() {
+    local attempt consecutive=0
+    for ((attempt=0; attempt<15; attempt++)); do
+        sleep 2
+        if probe_singbox_installation; then
+            consecutive=$((consecutive + 1))
+            if (( consecutive >= 2 )); then return 0; fi
+        else
+            consecutive=0
         fi
+    done
+    error 'sing-box 更新后内核或服务检查失败，请检查 sing-box.service 日志'
+    return 1
+}
+
+singbox_update_commands() {
+    local part caddy_active=0
+    [[ -x /usr/local/bin/sb ]] || { error '未找到可执行的 sb 管理脚本'; return 1; }
+    for part in sh core; do
+        info "更新 sing-box：$part"
+        timeout --signal=TERM --kill-after=30s 900 /usr/local/bin/sb update "$part" </dev/null || return 1
+    done
+    wait_singbox_ready || return 1
+    if command -v caddy >/dev/null 2>&1; then
+        systemctl is-active --quiet caddy && caddy_active=1
+        timeout --signal=TERM --kill-after=30s 900 /usr/local/bin/sb update caddy </dev/null || return 1
+        timeout --kill-after=5s 10 caddy version >/dev/null || return 1
+        if (( caddy_active )); then systemctl is-active --quiet caddy || return 1; fi
     fi
 }
 
-log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
-}
+update_singbox() (
+    acquire_sb_update_lock || { error '已有 sing-box 更新正在运行，或无法取得锁'; return 1; }
+    singbox_update_commands
+)
 
-run_update() {
-    local description=$1
-    shift
-    log "$description..."
-    if "$@" >> "$LOG_FILE" 2>&1; then
-        log "$description：成功"
-    else
-        log "$description：失败"
-        UPDATE_FAILED=1
-    fi
-}
-
-rotate_log
-exec 9>"$LOCK_FILE"
-if ! flock -n 9; then
-    log "已有更新任务正在运行，本次跳过"
-    exit 0
+configure_sb_update() {
+    step '构建 sing-box 自动更新脚本'
+    [[ -x /usr/local/bin/sb ]] || { error '未找到可执行的 sb 管理脚本'; return 1; }
+    local candidate
+    candidate=$(mktemp /usr/local/bin/.sb-update.XXXXXX) || return 1
+    if ! {
+        cat <<'SCRIPT_EOF'
+#!/bin/bash
+set -euo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+info() { printf '[INFO] %s\n' "$*"; }
+error() { printf '[ERROR] %s\n' "$*" >&2; }
+SCRIPT_EOF
+        declare -f acquire_sb_update_lock probe_singbox_installation wait_singbox_ready singbox_update_commands
+        cat <<'SCRIPT_EOF'
+lock_status=0
+acquire_sb_update_lock || lock_status=$?
+if (( lock_status == 75 )); then info '已有更新任务正在运行，本次跳过'; exit 0; fi
+(( lock_status == 0 )) || exit 1
+LOG_FILE=/var/log/sb-update.log
+if [[ -f "$LOG_FILE" ]]; then
+    log_size=$(stat -c '%s' "$LOG_FILE") || exit 1
+    if (( log_size >= 5 * 1024 * 1024 )); then mv -f -- "$LOG_FILE" "${LOG_FILE}.1" || exit 1; fi
 fi
-
-UPDATE_FAILED=0
-log "========== 开始更新 =========="
-run_update "更新 sb 脚本" "$SB_BIN" update sh
-run_update "更新 sing-box 内核" "$SB_BIN" update core
-
-if command -v caddy >/dev/null 2>&1; then
-    run_update "更新 caddy" "$SB_BIN" update caddy
+exec >>"$LOG_FILE" 2>&1
+date '+%Y-%m-%d %H:%M:%S 开始更新'
+if singbox_update_commands; then
+    info '更新完成，sing-box 内核及服务检查通过'
 else
-    log "未检测到 caddy，跳过"
-fi
-
-if (( UPDATE_FAILED != 0 )); then
-    log "========== 更新结束（存在失败，请检查日志）=========="
-    echo "" >> "$LOG_FILE"
+    error '更新失败或服务未就绪，请检查日志'
     exit 1
 fi
-
-log "========== 更新完成 =========="
-echo "" >> "$LOG_FILE"
 SCRIPT_EOF
-
-    install_file_if_changed "$candidate" /usr/local/bin/sb-auto-update.sh 0755
-
-    set_sb_update_cron 1
-    if ! systemctl is-active --quiet cron; then systemctl start cron; fi
-    if ! systemctl is-enabled --quiet cron; then systemctl enable cron; fi
-    info "sing-box 自动更新脚本已部署（每天 04:00 执行）"
-else
-    error "未检测到 /usr/local/bin/sb，无法启用定时更新"
-    return 1
-fi
+    } > "$candidate"; then rm -f -- "$candidate"; return 1; fi
+    if ! bash -n "$candidate" || ! install_file_if_changed "$candidate" /usr/local/bin/sb-auto-update.sh 0755; then
+        rm -f -- "$candidate"
+        return 1
+    fi
+    if ! systemctl is-active --quiet cron; then systemctl start cron || return 1; fi
+    if ! systemctl is-enabled --quiet cron; then systemctl enable cron || return 1; fi
+    systemctl is-active --quiet cron || return 1
+    set_sb_update_cron 1 || return 1
+    info 'sing-box 自动更新脚本已部署（每天 04:00 执行，包含锁、超时和服务验收）'
 }
 
 
@@ -1109,12 +1172,19 @@ EOF
         apt_files+=("$candidate" /etc/apt/apt.conf.d/20vps-auto-upgrades)
     fi
     apply_service_files unattended-upgrades validate_apt 1 "${apt_files[@]}" || return 1
-    info '自动安全更新服务已就绪，具体更新策略沿用现有 APT 配置'
+    if (( ${#apt_files[@]} )); then
+        systemctl enable --now apt-daily.timer apt-daily-upgrade.timer || return 1
+    fi
+    if systemctl is-active --quiet apt-daily.timer && systemctl is-active --quiet apt-daily-upgrade.timer; then
+        info 'APT 调度定时器运行中，自动更新是否启用及更新来源沿用 APT 策略'
+    else
+        warn 'APT 调度定时器未全部运行，自动安全更新可能不会执行；已保留原调度策略，请检查 apt-daily.timer / apt-daily-upgrade.timer'
+    fi
 
     step 'journald 日志上限 100M'
     install -d -m 0755 /etc/systemd/journald.conf.d
     candidate=$(mktemp /etc/systemd/journald.conf.d/.vps-limit.XXXXXX)
-    printf '[Journal]\nSystemMaxUse=100M\n' > "$candidate"
+    printf '[Journal]\nSystemMaxUse=100M\nRuntimeMaxUse=100M\n' > "$candidate"
     apply_service_files systemd-journald validate_none 0 "$candidate" /etc/systemd/journald.conf.d/limit.conf
 }
 
@@ -1144,10 +1214,14 @@ Architectures: ${DOCKER_ARCH}
 Signed-By: /etc/apt/keyrings/docker.asc
 DOCKER_REPO_EOF
 
-    apt-get update
+    apt-get update -o APT::Update::Error-Mode=any
     apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
     info "Docker 安装完成: $(docker --version)"
 fi
+
+# 已有 Docker 也独立检查 Compose，任何缺件应在修改 daemon 配置前解决。
+ensure_compose_plugin || return 1
+command -v dockerd >/dev/null 2>&1 || { error '未找到本机 dockerd；此入口要求本机 rootful Docker Engine'; return 1; }
 
 # 只使用部署者显式提供的镜像站；未提供时保留现有 mirrors。
 jq -e 'type == "array" and all(.[]; type == "string" and test("^https?://[^[:space:]]+$"))' <<< "$DOCKER_MIRRORS" >/dev/null || die 'DOCKER_MIRRORS 必须为 HTTP(S) 地址的 JSON 数组'
@@ -1203,6 +1277,50 @@ else
 fi
 }
 
+ensure_compose_plugin() {
+    if docker compose version >/dev/null 2>&1; then return 0; fi
+    local package candidate
+    for package in docker-compose-plugin docker-compose-v2; do
+        candidate=$(LC_ALL=C apt-cache policy "$package" | awk '/Candidate:/ {print $2; exit}') || return 1
+        if [[ -n "$candidate" && "$candidate" != '(none)' ]]; then
+            apt-get install -y -o Dpkg::Options::="--force-confold" "$package" || return 1
+            docker compose version >/dev/null 2>&1 || { error 'Compose 插件安装后仍不可用'; return 1; }
+            return 0
+        fi
+    done
+    error '已有 Docker 缺少 Compose v2+ 插件，当前 APT 源没有可用包；请先配置对应 Docker 仓库。尚未修改 daemon 配置。'
+    return 1
+}
+
+watchtower_api_version() {
+    local version minimum minor
+    version=$(docker version --format '{{.Server.APIVersion}}') || return 1
+    [[ "$version" =~ ^1\.([0-9]+)$ ]] || { error '无法读取 Docker 服务端 API 版本' >&2; return 1; }
+    minor=${BASH_REMATCH[1]}
+    # Watchtower 1.7.1 默认 1.25 不被 Docker 29 接受；优先使用兼容的 1.44。
+    minimum=$(docker version --format '{{.Server.MinAPIVersion}}') || return 1
+    [[ "$minimum" =~ ^1\.([0-9]+)$ ]] || { error '无法读取 Docker 最低 API 版本' >&2; return 1; }
+    if (( BASH_REMATCH[1] > 44 )); then error 'Docker 最低 API 已高于 Watchtower 兼容范围，请停用或升级更新器' >&2; return 1; fi
+    if (( minor < 25 )); then return 1; fi
+    if (( minor > 44 )); then minor=44; fi
+    DOCKER_API_VERSION="1.$minor" docker version >/dev/null || return 1
+    printf '1.%s\n' "$minor"
+}
+
+prepare_filebrowser_storage() {
+    [[ -n "${ENABLED_PROFILES[files]+x}" ]] || return 0
+    local directory
+    for directory in "$STACK_DIR/Filebrowser" "$STACK_DIR/Filebrowser/config" "$STACK_DIR/Filebrowser/database" "$STACK_DIR/Filebrowser/files"; do
+        [[ ! -L "$directory" ]] || { error "拒绝修改符号链接目录：$directory"; return 1; }
+        if [[ ! -d "$directory" ]]; then install -d -m 0750 -o 1000 -g 1000 "$directory" || return 1; fi
+    done
+    # 仅修复本应用配置与数据库，不更改 /root 或用户共享文件的递归权限。
+    for directory in config database; do
+        find "$STACK_DIR/Filebrowser/$directory" -xdev -exec chown --no-dereference 1000:1000 {} + || return 1
+    done
+    chown --no-dereference 1000:1000 "$STACK_DIR/Filebrowser/files" || return 1
+}
+
 deploy_services() {
 mkdir -p "${STACK_DIR}"
 
@@ -1240,12 +1358,18 @@ info "Browserless 随机令牌已就绪（保存在服务器上，不输出令�
 
 COMPOSE_TARGET="${STACK_DIR}/docker-compose.yml"
 COMPOSE_CANDIDATE=$(mktemp "${STACK_DIR}/.compose-candidate.XXXXXX")
+local watchtower_api=1.44
+if [[ "$WATCHTOWER_ACTION" == 1 ]]; then watchtower_api=$(watchtower_api_version) || return 1; fi
 cat > "$COMPOSE_CANDIDATE" << 'COMPOSE_EOF'
 # 容器日志限制由 /etc/docker/daemon.json 全局配置，无需逐服务设置
+x-vps-labels: &vps-labels
+  com.centurylinklabs.watchtower.enable: "true"
+  com.centurylinklabs.watchtower.scope: "vps-init"
 services:
 
   # ==================== 网络与证书管理 ====================
   nginx-proxy-manager:
+    labels: *vps-labels
     image: jc21/nginx-proxy-manager:latest
     container_name: npm
     restart: unless-stopped
@@ -1258,7 +1382,8 @@ services:
       - ./npm/letsencrypt:/etc/letsencrypt
   # ==================== 自动化更新 ====================
   watchtower:
-    image: containrrr/watchtower:latest
+    labels: *vps-labels
+    image: containrrr/watchtower:1.7.1
     container_name: watchtower
     profiles: ["watchtower"]
     restart: unless-stopped
@@ -1268,8 +1393,12 @@ services:
     environment:
       - WATCHTOWER_CLEANUP=true
       - WATCHTOWER_SCHEDULE=0 0 4 * * *
+      - DOCKER_API_VERSION=__WATCHTOWER_API__
+      - WATCHTOWER_LABEL_ENABLE=true
+      - WATCHTOWER_SCOPE=vps-init
   # ==================== 个人导航与工具 ====================
   homepage:
+    labels: *vps-labels
     image: ghcr.io/gethomepage/homepage:latest
     container_name: homepage
     restart: unless-stopped
@@ -1280,6 +1409,7 @@ services:
       - HOMEPAGE_ALLOWED_HOSTS=__HOMEPAGE_HOST__
 
   it-tools:
+    labels: *vps-labels
     image: ghcr.io/corentinth/it-tools:latest
     container_name: it-tools
     restart: unless-stopped
@@ -1287,6 +1417,7 @@ services:
 
   # ==================== 代码托管 ====================
   gitea:
+    labels: *vps-labels
     image: gitea/gitea:latest
     container_name: gitea
     restart: unless-stopped
@@ -1301,6 +1432,7 @@ services:
       - /etc/localtime:/etc/localtime:ro
   # ==================== 媒体与下载 ====================
   navidrome:
+    labels: *vps-labels
     image: deluan/navidrome:latest
     container_name: navidrome
     restart: unless-stopped
@@ -1310,6 +1442,7 @@ services:
       - ./music:/music:ro
 
   metube:
+    labels: *vps-labels
     image: ghcr.io/alexta69/metube
     container_name: metube
     restart: unless-stopped
@@ -1319,6 +1452,7 @@ services:
 
   # ==================== RSS 系统 ====================
   rsshub:
+    labels: *vps-labels
     image: diygod/rsshub:latest
     container_name: rsshub
     restart: always
@@ -1338,6 +1472,7 @@ services:
       - browserless
 
   browserless:
+    labels: *vps-labels
     # browserless/chrome (v1) 已停止维护，改用 v2 chromium 镜像
     image: ghcr.io/browserless/chromium:latest
     container_name: browserless
@@ -1354,6 +1489,7 @@ services:
         soft: 0
 
   redis:
+    labels: *vps-labels
     image: redis:alpine
     container_name: redis
     restart: always
@@ -1369,16 +1505,19 @@ services:
 
   # ==================== 文件管理 ====================
   filebrowser:
+    labels: *vps-labels
     image: filebrowser/filebrowser:latest
     container_name: filebrowser
     profiles: ["files"]
+    user: "1000:1000"
     volumes:
-      - /root:/srv
+      - ./Filebrowser/files:/srv
       - ./Filebrowser/database:/database
       - ./Filebrowser/config:/config
     restart: unless-stopped
 
   openlist:
+    labels: *vps-labels
     image: openlistteam/openlist:latest
     container_name: openlist
     profiles: ["files"]
@@ -1390,6 +1529,7 @@ services:
       - UMASK=022
   # ==================== 监控系统 ====================
   uptime-kuma:
+    labels: *vps-labels
     image: louislam/uptime-kuma:latest
     container_name: uptime-kuma
     restart: unless-stopped
@@ -1397,6 +1537,7 @@ services:
     volumes:
       - ./uptime-kuma/data:/app/data
   beszel:
+    labels: *vps-labels
     image: henrygd/beszel:latest
     container_name: beszel
     restart: unless-stopped
@@ -1407,7 +1548,10 @@ services:
       - ./beszel/data:/beszel_data
   # ==================== 笔记系统 ====================
   memos:
-    image: neosmemo/memos:latest
+    image: __MEMOS_IMAGE__
+    # 数据库迁移需要备份和人工核对版本路径，不交给 Watchtower 自动升级。
+    labels:
+      com.centurylinklabs.watchtower.enable: "false"
     container_name: memos
     restart: unless-stopped
     profiles: ["notes"]
@@ -1423,12 +1567,14 @@ COMPOSE_EOF
 
 # 域名已通过严格校验，可安全替换占位符
 sed -i "s|__HOMEPAGE_HOST__|${HOMEPAGE_HOST}|g" "$COMPOSE_CANDIDATE"
+sed -i "s|__WATCHTOWER_API__|${watchtower_api}|g; s|__MEMOS_IMAGE__|${MEMOS_IMAGE:-neosmemo/memos:0.31.0}|g" "$COMPOSE_CANDIDATE"
 
 if ! docker compose --env-file "$BROWSERLESS_ENV_FILE" --project-directory "$STACK_DIR" -f "$COMPOSE_CANDIDATE" "${COMPOSE_PROFILE_ARGS[@]}" config -q; then
     rm -f -- "$COMPOSE_CANDIDATE"
     error "docker-compose.yml 校验失败，保留原文件，未拉取镜像或启动服务"
     exit 1
 fi
+prepare_filebrowser_storage || { rm -f -- "$COMPOSE_CANDIDATE"; return 1; }
 local compose_backup='' compose_changed=0
 if ! cmp -s -- "$COMPOSE_CANDIDATE" "$COMPOSE_TARGET"; then
     if [[ -f "$COMPOSE_TARGET" ]]; then
@@ -1511,18 +1657,56 @@ echo "     RSSHub:        1200"
 echo ""
 echo "  3. ghcr.io 镜像拉取失败？"
 echo "     如 homepage / it-tools / metube 拉取超时，可手动配置 ghcr.io 代理"
-echo "     或在 daemon.json 中添加对应加速地址后重新 docker compose --env-file .browserless.env pull"
+echo "     请配置 Docker daemon 的 HTTP(S) 网络代理，或显式改用可信的镜像仓库地址"
+echo "     daemon.json 的 registry-mirrors 仅适用于 Docker Hub，不会透明代理 ghcr.io"
 echo ""
+}
+
+read_root_crontab() {
+    local errors result=0
+    errors=$(mktemp) || return 1
+    ROOT_CRONTAB_CONTENT=$(LC_ALL=C crontab -l 2>"$errors") || result=$?
+    if (( result != 0 )); then
+        if [[ "$result" == 1 && -z "$ROOT_CRONTAB_CONTENT" ]] && grep -qxE 'no crontab for [^[:space:]]+' "$errors"; then
+            ROOT_CRONTAB_CONTENT=''
+        else
+            rm -f -- "$errors"
+            error '无法读取现有 crontab，停止修改以保护原有任务'
+            return 1
+        fi
+    fi
+    rm -f -- "$errors"
+}
+
+backup_root_crontab() {
+    local backup
+    install -d -m 0700 /var/backups/vps-init || return 1
+    backup=$(mktemp /var/backups/vps-init/crontab.XXXXXXXX) || return 1
+    printf '%s\n' "$1" > "$backup" || return 1
+    info "修改前的 crontab 已保存至 $backup"
+}
+
+# 参数 1 输出本脚本的任务，0 输出应保留的其他行；读状态与修改共用规则。
+filter_sb_update_cron() {
+    awk -v managed_only="$1" '
+        {
+            managed = (NF >= 6 && $6 == "/usr/local/bin/sb-auto-update.sh") || ($1 ~ /^@/ && $2 == "/usr/local/bin/sb-auto-update.sh")
+            if ($0 ~ /^[[:space:]]*#/ || $0 ~ /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=/) managed=0
+            if (managed == managed_only) print
+        }
+    '
 }
 
 set_sb_update_cron() {
     local enabled=$1 previous desired
-    previous=$(crontab -l 2>/dev/null || true)
-    desired=$(awk '!($0 !~ /^[[:space:]]*#/ && $0 ~ /(^|[[:space:]])\/usr\/local\/bin\/sb-auto-update\.sh([[:space:]]|$)/)' <<< "$previous")
+    read_root_crontab || return 1
+    previous=$ROOT_CRONTAB_CONTENT
+    desired=$(filter_sb_update_cron 0 <<< "$previous") || return 1
     if [[ "$enabled" == 1 ]]; then
         desired="${desired:+$desired$'\n'}0 4 * * * /usr/local/bin/sb-auto-update.sh"
     fi
     if [[ "$desired" != "$previous" ]]; then
+        backup_root_crontab "$previous" || return 1
         printf '%s\n' "$desired" | crontab - || return 1
     else
         info 'sing-box 定时任务未变化，跳过写入'
@@ -1549,7 +1733,7 @@ apply_background_actions() {
 setup_existing_stack() {
     BROWSERLESS_ENV_FILE="$STACK_DIR/.browserless.env"
     [[ -f "$STACK_DIR/docker-compose.yml" && -f "$BROWSERLESS_ENV_FILE" ]] || { error '未找到已有 Compose 或令牌文件，请先初始化/安装组件'; return 1; }
-    [[ $(wc -l < "$BROWSERLESS_ENV_FILE") == 1 ]] && grep -qxE 'BROWSERLESS_TOKEN=[0-9a-f]{64}' "$BROWSERLESS_ENV_FILE" || { error '已有令牌文件格式无效'; return 1; }
+    if [[ $(wc -l < "$BROWSERLESS_ENV_FILE") -ne 1 ]] || ! grep -qxE 'BROWSERLESS_TOKEN=[0-9a-f]{64}' "$BROWSERLESS_ENV_FILE"; then error '已有令牌文件格式无效'; return 1; fi
     unset BROWSERLESS_TOKEN
     COMPOSE_ENV_ARGS=(--env-file "$BROWSERLESS_ENV_FILE" -f "$STACK_DIR/docker-compose.yml")
 }
@@ -1636,7 +1820,8 @@ show_status() {
         done
         info "拥塞控制：$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo '由宿主机管理')"
         if command -v crontab >/dev/null 2>&1; then
-            crontab -l 2>/dev/null | awk '/^[^#].*\/usr\/local\/bin\/sb-auto-update\.sh/ {found=1} END {print "sing-box 定时更新：" (found ? "已配置" : "未配置")}' || true
+            read_root_crontab || return 1
+            if [[ -n "$(filter_sb_update_cron 1 <<< "$ROOT_CRONTAB_CONTENT")" ]]; then info 'sing-box 定时更新：已配置'; else info 'sing-box 定时更新：未配置'; fi
         fi
     fi
 }
@@ -1652,20 +1837,23 @@ update_selected() {
         fi
         if [[ "$INSTALL_SING_BOX" == 1 ]]; then
             [[ -x /usr/local/bin/sb ]] || { error '未找到 sb 管理脚本，请先安装'; return 1; }
-            /usr/local/bin/sb update sh || return 1
-            /usr/local/bin/sb update core || return 1
+            update_singbox || return 1
         fi
     fi
 }
 
 # 第三方安装程序先完整下载并检查 Bash 语法，下载失败不得执行部分内容。
 run_installer() (
-    local installer
+    local installer tty_fd
     installer=$(mktemp)
     trap 'rm -f -- "$installer"' EXIT
-    curl -fsSL "$1" -o "$installer" || return 1
+    curl -fsSL --connect-timeout 15 --max-time 120 "$1" -o "$installer" || return 1
     [[ -s "$installer" ]] && bash -n "$installer" || return 1
-    bash "$installer"
+    if { exec {tty_fd}<>/dev/tty; } 2>/dev/null; then
+        bash "$installer" <&"$tty_fd"
+    else
+        bash "$installer" </dev/null
+    fi
 )
 
 show_help() {
@@ -1706,7 +1894,7 @@ show_help() {
   8) all：全部服务组
   0) none：仅基础组件（默认）
 其他变量：VPS_HOSTNAME、UPGRADE_SYSTEM、INSTALL_STARSHIP、RESET_STARSHIP_CONFIG、
-          IPERF3_PORT、HOMEPAGE_HOST、STACK_DIR、DOCKER_MIRRORS、SERVICE_WAIT_TIMEOUT。
+          IPERF3_PORT、HOMEPAGE_HOST、MEMOS_IMAGE、STACK_DIR、DOCKER_MIRRORS、SERVICE_WAIT_TIMEOUT。
 HELP
 }
 

@@ -17,7 +17,9 @@ error() { printf '[ERROR] %s\n' "$*"; }
 apt-get() {
     printf '%s\n' "$*" >> "$apt_log"
     case "$1" in
-        update) return "$update_status" ;;
+        update)
+            if [[ "${transient_error:-0}" == 1 && "$*" == *APT::Update::Error-Mode=any* ]]; then return 1; fi
+            return "$update_status" ;;
         upgrade) return "$upgrade_status" ;;
         install) return 0 ;;
         *) return 99 ;;
@@ -50,7 +52,7 @@ for source_file in "$project_dir"/*.sh; do
         inside {print}
         /^# ---------- 系统升级处理结束 ----------$/ {getline; print; exit}
     ' "$source_file" >> "$test_dir/fragment.sh"
-    grep -q '^if ! apt-get update; then$' "$test_dir/fragment.sh" || fail '未找到更新逻辑'
+    grep -q '^if ! apt-get update.*; then$' "$test_dir/fragment.sh" || fail '未找到更新逻辑'
     grep -q '^apt-get install -y ' "$test_dir/fragment.sh" || fail '未找到实际基础工具安装命令'
 
     export update_status=1 upgrade_status=0
@@ -63,5 +65,8 @@ for source_file in "$project_dir"/*.sh; do
     run_case default 0 update,upgrade,install
     run_case 1 0 update,upgrade,install
     run_case invalid 1 ''
+    export transient_error=1
+    run_case default 1 update
+    export transient_error=0
     printf '[PASS] %s\n' "$(basename "$source_file")"
 done

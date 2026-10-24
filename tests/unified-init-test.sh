@@ -238,10 +238,10 @@ printf '[PASS] Compose 令牌复用、无变化跳过、校验/启动失败恢�
 (
     installer_mode=partial
     curl() {
-        printf 'printf executed > "%s/installer-executed"\n' "$test_dir" > "$4"
+        printf 'printf executed > "%s/installer-executed"\n' "$test_dir" > "${@: -1}"
         case "$installer_mode" in
             partial) return 1 ;;
-            invalid) printf 'if then\n' >> "$4" ;;
+            invalid) printf 'if then\n' >> "${@: -1}" ;;
         esac
     }
     if run_installer https://example.com/installer.sh > "$test_dir/install" 2>&1; then fail '执行了未下载完整的安装器'; fi

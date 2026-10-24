@@ -95,12 +95,18 @@ iperf3 默认端口 `5201` 且无身份认证，默认启用常驻服务后应�
 整合版与旧版的差异：
 
 - 国内服务从默认全部启动改为默认仅基础组件，按需选择其余服务。只有选中 `tools` 时才要求输入 Homepage 域名。
+- 重跑及追加其他服务组时复用已有 Homepage 域名；通过 `HOMEPAGE_HOST` 可显式修改。FileBrowser 使用 UID/GID 1000，配置和数据库目录会预先准备并修正所有权；文件根目录为 `${STACK_DIR}/Filebrowser/files`，不再暴露 `/root`。旧部署需将希望管理的文件放入该专用目录。
+- Watchtower 固定为 `1.7.1`，启用前检查 Docker 服务端 API 范围并验证所选 API，避免默认 `1.25` 与 Docker 29 不兼容。它只更新带本脚本 `vps-init` scope 和 enable 标签的容器，不更新其他项目；Memos 排除在自动更新范围外。旧容器在组件模式重新生成配置并重建后才获得这些标签。
 - Docker 镜像站由部署者通过 `DOCKER_MIRRORS` 提供可信地址，整合版不内置第三方镜像站；未设置时保留已有镜像站，新安装则使用原始镜像源。
 - 四个境外场景统一按参数逐项探测可用性，未暴露或不可写的 TCP 参数会提示并跳过。HK / 精简版保留 16 MiB 缓冲上限，LA / DE 保留 32 MiB；DE 保留原有的发送缓冲默认值及专用参数。32 MiB 是自动调节上限，并非预分配内存。
 - fail2ban、Docker daemon、安全更新 drop-in 和 journald 使用配置事务：只备份发生变化的文件；校验失败恢复原文件，启动失败还尝试恢复服务原有运行状态。自动安全更新不再覆盖现有 `20auto-upgrades` 和 `50unattended-upgrades`；只有缺少传统周期配置时才维护独立 `20vps-auto-upgrades`，更新来源、清理和自动重启策略沿用现有配置。
 - Compose 使用候选文件先校验，内容有变化才备份替换；启动验收失败时恢复原 Compose 并尝试恢复原服务配置。首次部署失败会撤回新 Compose，保留容器供排查。恢复不包含服务数据或镜像版本回退；不会自动合并手工修改的 Compose，请核对备份。
-- 国内服务根据当前选择逐一验收，默认最多等待 120 秒；缺少容器、退出、重启中、不健康或状态读取失败均返回失败。有健康检查的容器必须为 `healthy`，没有健康检查时仅确认进程为 `running`，会明确标注，不表示应用接口已可用。多副本需全部满足条件。
-- NextTrace / sing-box 安装器先完整下载并通过 Bash 语法检查，再执行；语法检查不代表远程代码可信。未固定第三方安装器及容器镜像版本，内容可能随上游更新变化。
+- 国内服务根据当前选择逐一验收，默认最多等待 300 秒；缺少容器、退出、重启中、不健康或状态读取失败均返回失败。有健康检查的容器必须为 `healthy`，没有健康检查时仅确认进程为 `running`，会明确标注，不表示应用接口已可用。多副本需全部满足条件，低配置或数据库迁移较慢时可调整 `SERVICE_WAIT_TIMEOUT`。
+- NextTrace / sing-box 安装器先完整下载并通过 Bash 语法检查，再执行；连接超时 15 秒、下载最长 120 秒，安装器输入使用控制终端或空输入，不读取脚本管道。语法检查不代表远程代码可信。第三方安装器和多数容器镜像仍随上游变化，Memos / Watchtower 使用固定版本。
+- 手动和定时 sing-box 更新共享互斥锁，每条更新命令最长 900 秒，超时后给予 30 秒退出时间；更新后连续检查内核和服务。仅锁被占用时跳过，权限或锁工具错误返回失败。定时更新在取得锁后轮转日志；部署脚本、启动 cron、写入任务任一步失败都停止并报告失败。
+- 修改 cron 前读取失败会停止，原任务备份到 `/var/backups/vps-init/`（目录 0700、备份 0600）；只匹配实际执行本更新脚本的任务，不删除把该路径作为参数的其他任务。多文件配置先完成全部备份再写入，启动或 enable 失败会恢复配置和服务状态。
+- APT 更新使用 `APT::Update::Error-Mode=any`，临时下载错误也会中止。已有 Docker 会独立检查和补装 Compose 插件，缺少可用软件源时在修改 daemon 配置前报错。`registry-mirrors` 仅适用于 Docker Hub；GHCR 需配置 daemon 网络代理或显式使用可信仓库地址。
+- iperf3 在写配置前检查端口归属，启动后确认监听属于本服务进程。新建自动安全更新策略时启用 APT timers；已有策略保留，并报告调度器是否运行。journald 同时设置持久日志和内存日志上限为 100M。
 - 不选择某个组件不会卸载或删除它；切换服务组也不等于移除上次部署的服务。适用的后台任务默认启用，选择 `2` 执行对应停用操作；已有任务选择 `0` 保留现状。
 - 检查 Debian 11+ / Ubuntu 22.04+ 及运行中的 systemd；受限容器兼容仅指 TCP 参数跳过，服务部署仍需要 systemd。无终端时必须显式提供场景。
 
@@ -120,8 +126,9 @@ iperf3 默认端口 `5201` 且无身份认证，默认启用常驻服务后应�
 | `RESET_STARSHIP_CONFIG` | 默认 `0` 保留已有主题；`1` 备份后重置 |
 | `IPERF3_PORT` | 境外场景默认 `5201`，范围 1024–65535 |
 | `IPERF3_ACTION` / `WATCHTOWER_ACTION` / `SB_UPDATE_ACTION` | 安装模式中适用的任务默认 `1` 启用，`2` 不启用/停用已有任务；显式 `0` 保持。检查/更新模式默认 `0`，不适用的任务也为 `0` |
-| `SERVICE_WAIT_TIMEOUT` | 国内服务启动验收等待秒数，默认 `120`，范围 1–3600；状态检查立即报告结果 |
-| `HOMEPAGE_HOST` | 选中 `tools` 时必须提供或交互输入有效 DNS 域名 |
+| `SERVICE_WAIT_TIMEOUT` | 国内服务启动验收等待秒数，默认 `300`，范围 1–3600；状态检查立即报告结果 |
+| `HOMEPAGE_HOST` | 首次选中 `tools` 时提供或输入域名；重跑默认复用已有值，显式设置可覆盖 |
+| `MEMOS_IMAGE` | 默认 `neosmemo/memos:0.31.0`；重跑保留已有镜像选择，也可设为 `ghcr.io/usememos/memos:0.31.0` |
 | `STACK_DIR` | 国内部署目录，默认 `/opt/stacks`，必须是非根目录的绝对路径 |
 | `DOCKER_MIRRORS` | Docker 镜像站 JSON 数组，例如 `'["https://mirror.example.com"]'`；默认 `[]`，不改已有镜像站 |
 
@@ -144,7 +151,27 @@ VPS_MODE=update VPS_SCENE=5 SERVICE_PROFILES=4 bash vps-init.sh --plan
 # 正式执行时去掉 --plan；请在目标 VPS 上以 root 运行
 ```
 
-2026-10-22 已核对上述整合版 Gist，其 `vps-init.sh` 与本次同步的脚本内容一致。`raw` 最新地址未固定到具体修订，后续会随 Gist 更新变化。下方旧 Gist 地址仍对应原有独立入口，不应作为整合版下载地址。
+2026-10-24 审计修复版本的 `vps-init.sh` SHA-256 为 `2c61115beb224e59f24909c674f8934b97516f526426c7e4c42890097dea244c`。上机测试前可用 `sha256sum vps-init.sh` 核对下载内容；Gist 下载也应得到同一摘要。下方旧 Gist 地址仍对应原有独立入口，不应作为整合版下载地址。
+
+### Memos 镜像与已有数据升级
+
+2026-10-24 实际查询官方 Registry：以下四个引用均可读取，且当前 manifest 摘要相同，支持 linux/amd64、linux/arm64、linux/arm/v7；`neosmemo/memos:latest` 返回 404。
+
+| 仓库 | 固定版本（默认推荐） | 跟随稳定版 |
+| --- | --- | --- |
+| Docker Hub | `neosmemo/memos:0.31.0` | `neosmemo/memos:stable` |
+| GHCR | `ghcr.io/usememos/memos:0.31.0` | `ghcr.io/usememos/memos:stable` |
+
+amd64 和 arm64 的 `0.31.0` 配置及全部镜像层已实际下载并逐项校验 SHA256。这是 Registry 下载验证；没有在本机执行 Docker 容器启动。固定版本便于计划数据库迁移，脚本默认排除 Memos 的 Watchtower 自动更新。
+
+已有旧版数据库升级前，先备份数据库和附件，核对当前版本及[官方升级路径](https://usememos.com/docs/operations/upgrade)：早于 0.22 的版本需先成功运行 `0.25.3`，再升级 `0.31.0`；未来升级至 26.10 时必须先经过 `0.31.0`。数据库迁移后不能仅靠换回旧镜像回滚，需要数据备份。
+
+如果检测到旧模板 `latest` 和已有数据，安装/组件模式选择 notes 时会要求显式设置 `MEMOS_IMAGE`，避免猜测迁移路径。只追加其他服务组不会修改这类旧 Memos 的镜像选择；状态模式也不会触发迁移。升级模式复用现有 Compose；应用本次模板修复请使用组件模式重新生成配置，例如新装 Memos：
+
+```bash
+VPS_MODE=components VPS_SCENE=domestic SERVICE_PROFILES=notes \
+  MEMOS_IMAGE=neosmemo/memos:0.31.0 bash vps-init.sh
+```
 
 ## 旧版独立入口
 
@@ -237,7 +264,12 @@ bash tests/system-update-test.sh
 bash tests/unified-init-test.sh
 bash tests/reliability-test.sh
 bash tests/singbox-install-test.sh
+bash tests/audit-regression-test.sh
 ```
+
+`audit-regression-test.sh` 覆盖本轮审计的失败路径、配置保留和镜像模板，若本机有独立 Compose CLI，可设置 `COMPOSE_TEST_BIN=/path/to/docker-compose`，用真实 CLI 校验全部 15 个服务，无需 daemon。临时 Bash/工具兼容环境中的测试不能替代 Linux 上真实 systemd / Docker 验收。
+
+本次主要维护整合入口；旧版独立脚本同步了 APT 严格错误处理与境外主机名长度、hosts 地址匹配修正，其他增强逻辑请使用整合入口。
 
 新增隔离测试覆盖五种场景和四种模式、菜单映射、真实空行输入默认值、新装/已有后台任务菜单、只读状态探测、定时更新适用条件、公共步骤只执行一次、只读预览、TCP 差异、Compose 令牌复用与失败恢复、后台任务独立启停、健康状态解析、无变化跳过及原有自动更新策略保留。sing-box 专项测试覆盖成功但非零退出、退出零但内核缺失/服务未运行、已有实例跳过和节点文件保留。Docker / systemd / sysctl 等操作使用替身，不能替代真实 Debian / Ubuntu 隔离环境中的部署验收。
 

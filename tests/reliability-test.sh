@@ -244,6 +244,7 @@ printf '[PASS] 不适用的更新任务跳过、显式错误请求拦截及只�
 
 # cron 修改保留其他条目和注释，内容不变时不写入。
 (
+    backup_root_crontab() { printf '%s\n' "$1" > "$test_dir/cron-backup"; }
     cron_file="$test_dir/crontab"
     printf '# /usr/local/bin/sb-auto-update.sh reference\n0 1 * * * /other/backup.sh\n' > "$cron_file"
     crontab() {

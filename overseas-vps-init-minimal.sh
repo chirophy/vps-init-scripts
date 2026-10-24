@@ -212,7 +212,7 @@ valid_hostname() {
     local label
     local -a labels
 
-    (( ${#hostname} >= 1 && ${#hostname} <= 253 )) || return 1
+    (( ${#hostname} >= 1 && ${#hostname} <= 64 )) || return 1
     [[ "$hostname" != .* && "$hostname" != *. && "$hostname" != *".."* ]] || return 1
 
     IFS='.' read -r -a labels <<< "$hostname"
@@ -266,8 +266,8 @@ while true; do
     fi
 
     # FQDN 在前、短主机名在后，避免 sudo 报 "unable to resolve host"。
-    if grep -q '^127\.0\.1\.1' /etc/hosts; then
-        sed -i "s/^127\.0\.1\.1.*/127.0.1.1\t${HOSTS_NAMES}/" /etc/hosts
+    if grep -qE '^127\.0\.1\.1([[:space:]]|$)' /etc/hosts; then
+        sed -i -E "s/^127\.0\.1\.1([[:space:]]|$).*/127.0.1.1\t${HOSTS_NAMES}/" /etc/hosts
     else
         printf '127.0.1.1\t%s\n' "$HOSTS_NAMES" >> /etc/hosts
     fi
@@ -285,7 +285,7 @@ case "${UPGRADE_SYSTEM:-1}" in
     0|1) ;;
     *) error "UPGRADE_SYSTEM 仅支持 0 或 1"; exit 1 ;;
 esac
-if ! apt-get update; then
+if ! apt-get update -o APT::Update::Error-Mode=any; then
     error "软件包索引更新失败，停止初始化；请解决 APT 错误后重试"
     exit 1
 fi

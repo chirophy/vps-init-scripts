@@ -226,8 +226,8 @@ read -rp "请输入新主机名（直接回车跳过）: " NEW_HOSTNAME < /dev/t
 if [[ -n "$NEW_HOSTNAME" ]]; then
     hostnamectl set-hostname "$NEW_HOSTNAME"
     # 同步 /etc/hosts，避免 sudo 报 "unable to resolve host"
-    if grep -q '^127\.0\.1\.1' /etc/hosts; then
-        sed -i "s/^127\.0\.1\.1.*/127.0.1.1\t${NEW_HOSTNAME}/" /etc/hosts
+    if grep -qE '^127\.0\.1\.1([[:space:]]|$)' /etc/hosts; then
+        sed -i -E "s/^127\.0\.1\.1([[:space:]]|$).*/127.0.1.1\t${NEW_HOSTNAME}/" /etc/hosts
     else
         echo -e "127.0.1.1\t${NEW_HOSTNAME}" >> /etc/hosts
     fi
@@ -246,7 +246,7 @@ case "${UPGRADE_SYSTEM:-1}" in
     0|1) ;;
     *) error "UPGRADE_SYSTEM 仅支持 0 或 1"; exit 1 ;;
 esac
-if ! apt-get update; then
+if ! apt-get update -o APT::Update::Error-Mode=any; then
     error "软件包索引更新失败，停止初始化；请解决 APT 错误后重试"
     exit 1
 fi
@@ -320,7 +320,7 @@ Architectures: ${DOCKER_ARCH}
 Signed-By: /etc/apt/keyrings/docker.asc
 DOCKER_REPO_EOF
 
-    apt-get update
+    apt-get update -o APT::Update::Error-Mode=any
     apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
     info "Docker 安装完成: $(docker --version)"
 fi
