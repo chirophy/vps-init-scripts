@@ -194,17 +194,19 @@ printf '[PASS] Watchtower API 兼容范围及独立补装 Compose\n'
 (
     STACK_DIR="$test_dir/filebrowser"; declare -A ENABLED_PROFILES=([files]=1)
     install() { printf '%s\n' "$*" >> "$test_dir/ownership"; mkdir -p "${@: -1}"; }
-    # find 自身也已替换，不会通过 find -exec 调用此 Shell 替身。
-    # shellcheck disable=SC2032
-    chown() { printf '%s\n' "$*" >> "$test_dir/ownership"; }
-    find() { [[ "$*" == *'--no-dereference 1000:1000'* ]] || fail '未修复应用数据所有权'; }
+    chown() { fail '不应更改已有目录的所有权'; }
+    find() { fail '不应递归遍历用户文件'; }
     prepare_filebrowser_storage
-    [[ -d "$STACK_DIR/Filebrowser/files" ]] || fail '未准备专用文件目录'
-    grep -q -- '-o 1000 -g 1000' "$test_dir/ownership" || fail '首次目录所有权错误'
+    [[ -d "$STACK_DIR/Filebrowser/config" && -d "$STACK_DIR/Filebrowser/database" ]] || fail '未准备应用配置目录'
+    [[ ! -e "$STACK_DIR/Filebrowser/files" ]] || fail '仍创建专用文件目录'
+    grep -q -- '-o 0 -g 0' "$test_dir/ownership" || fail '首次目录所有权错误'
+    : > "$test_dir/ownership"
+    prepare_filebrowser_storage
+    [[ ! -s "$test_dir/ownership" ]] || fail '重跑仍调整已有目录权限'
     rmdir "$STACK_DIR/Filebrowser/config"; ln -s "$test_dir" "$STACK_DIR/Filebrowser/config"
     if prepare_filebrowser_storage > "$test_dir/output"; then fail '接受应用目录符号链接'; fi
 )
-printf '[PASS] FileBrowser 专用目录、UID/GID 与符号链接保护\n'
+printf '[PASS] FileBrowser root 访问、已有目录权限保留与符号链接保护\n'
 
 (
     STACK_DIR="$test_dir/stack"; WATCHTOWER_ACTION=0; MEMOS_IMAGE=neosmemo/memos:0.31.0
@@ -226,7 +228,10 @@ printf '[PASS] FileBrowser 专用目录、UID/GID 与符号链接保护\n'
     grep -q 'HOMEPAGE_ALLOWED_HOSTS=nav.example.net' "$STACK_DIR/docker-compose.yml" || fail '追加服务覆盖域名'
     grep -q 'image: neosmemo/memos:0.31.0' "$STACK_DIR/docker-compose.yml" || fail 'Memos 未使用固定可用标签'
     grep -q 'WATCHTOWER_SCOPE=vps-init' "$STACK_DIR/docker-compose.yml" || fail '自动更新没有限定范围'
-    ! grep -q '/root:/srv' "$STACK_DIR/docker-compose.yml" || fail '仍挂载 root 主目录'
+    for mount in '/root:/srv' '/Music:/music:ro' '/OpenList:/opt/openlist/data'; do
+        grep -qF -- "- $mount" "$STACK_DIR/docker-compose.yml" || fail "整合入口缺少挂载：$mount"
+        grep -qF -- "- $mount" "$project_dir/domestic-vps-init.sh" || fail "国内旧入口缺少挂载：$mount"
+    done
     if [[ -n "${COMPOSE_TEST_BIN:-}" ]]; then
         "$COMPOSE_TEST_BIN" --env-file "$STACK_DIR/.browserless.env" -f "$STACK_DIR/docker-compose.yml" --profile '*' config --format json > "$test_dir/compose.json"
         python3 - "$test_dir/compose.json" <<'PY'
@@ -235,7 +240,15 @@ s=json.load(open(sys.argv[1]))['services']
 assert len(s)==15
 assert s['memos']['labels']['com.centurylinklabs.watchtower.enable']=='false'
 assert all(v['labels']['com.centurylinklabs.watchtower.scope']=='vps-init' for k,v in s.items() if k!='memos')
-assert s['filebrowser']['user']=='1000:1000'
+assert s['filebrowser']['user']=='0:0'
+def mount(service, target):
+    return next(v for v in s[service]['volumes'] if v['target']==target)
+assert mount('filebrowser','/srv')['source']=='/root'
+assert not mount('filebrowser','/srv').get('read_only',False)
+assert mount('navidrome','/music')['source']=='/Music'
+assert mount('navidrome','/music')['read_only']
+assert mount('openlist','/opt/openlist/data')['source']=='/OpenList'
+assert not mount('openlist','/opt/openlist/data').get('read_only',False)
 assert s['watchtower']['environment']['DOCKER_API_VERSION']=='1.44'
 PY
     fi

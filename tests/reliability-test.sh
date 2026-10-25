@@ -106,6 +106,7 @@ printf '[PASS] 逐个服务、健康状态、多副本、JSON 格式与失败退
 for mode in full components status update; do
     for scene in hk domestic; do
         (
+            print_system_overview() { :; }
             for fn in preflight collect_hostname collect_homepage configure_hostname install_base configure_starship configure_security configure_tcp configure_fail2ban install_nexttrace install_singbox apply_background_actions install_docker deploy_services show_status update_selected; do
                 eval "$fn() { printf '%s\\n' '$fn' >> \"\$test_dir/mode-calls\"; }"
             done

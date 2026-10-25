@@ -580,7 +580,7 @@ services:
     profiles: ["media"]
     volumes:
       - ./navidrome/data:/data
-      - ./music:/music:ro
+      - /Music:/music:ro
 
   metube:
     image: ghcr.io/alexta69/metube
@@ -645,6 +645,8 @@ services:
     image: filebrowser/filebrowser:latest
     container_name: filebrowser
     profiles: ["files"]
+    # 需要管理宿主机 /root；不放宽 /root 的文件权限。
+    user: "0:0"
     volumes:
       - /root:/srv
       - ./Filebrowser/database:/database
@@ -658,7 +660,7 @@ services:
     user: "0:0"
     restart: unless-stopped
     volumes:
-      - ./openlist/data:/opt/openlist/data
+      - /OpenList:/opt/openlist/data
     environment:
       - UMASK=022
   # ==================== 监控系统 ====================

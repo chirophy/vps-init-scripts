@@ -6,12 +6,14 @@
 
 ## 推荐：单文件整合入口
 
-使用 `vps-init.sh`，只需将这一个文件放到 VPS 上即可运行，不依赖同目录中的旧版脚本。先选择场景与组件，再执行公共步骤；不用分别维护、运行多个版本。原有五个脚本暂时保留，供迁移核对和兼容旧入口。
+使用 `vps-init.sh`，只需将这一个文件放到 VPS 上即可运行，不依赖同目录中的旧版脚本。启动后先显示本机系统概况，再选择操作、用途 / 线路、工具或服务组，最后设置后台任务并查看本次执行方案。原有五个脚本暂时保留，供迁移核对和兼容旧入口。
 
-整合版 [GitHub 仓库](https://github.com/chirophy/vps-init-scripts) / [Gist](https://gist.github.com/chirophy/f778ae67ce369aa623e193c1562842db)。远程下载后先预览方案：
+系统概况包括主机名、发行版、内核与架构、CPU、内存和 Swap、根分区容量、运行时长、系统负载、虚拟化、systemd 状态及当前用户。只读取本机文件或运行只读命令，不联网探测、不安装依赖；缺少字段或探测命令时显示“未知”，继续进入菜单。`--plan` 同样显示概况；`--help` 直接显示帮助。正式执行前仍会严格检查支持的系统版本、root 权限和 systemd。
+
+整合版 [GitHub 仓库](https://github.com/chirophy/vps-init-scripts) / [Gist](https://gist.github.com/chirophy/f778ae67ce369aa623e193c1562842db)。从 GitHub 下载当前版本并预览方案；Gist 作为另行同步的备用入口：
 
 ```bash
-curl -fsSL https://gist.githubusercontent.com/chirophy/f778ae67ce369aa623e193c1562842db/raw/vps-init.sh -o vps-init.sh && bash vps-init.sh --plan
+curl -fsSL https://raw.githubusercontent.com/chirophy/vps-init-scripts/main/vps-init.sh -o vps-init.sh && bash vps-init.sh --plan
 ```
 
 下载成功并核对方案后，在目标 VPS 上以 root 执行：
@@ -24,29 +26,35 @@ bash vps-init.sh --plan
 bash vps-init.sh
 ```
 
-场景选择：
+操作菜单增加适用情况说明，原编号和默认值保持不变：新机器选 `1` 完整初始化；补装工具、部署应用或调整后台任务选 `2` 安装 / 调整组件；查看运行状态选 `3`；更新已有工具或服务选 `4`。操作菜单新增 `0` 直接退出。
 
-| 序号 | 场景 | 自动执行的场景步骤 |
+随后选择服务器用途 / 线路。下表中的 TCP 与系统配置仅在“完整初始化”时执行；其他操作用该选择确定组件范围：
+
+| 序号 | 用途 / 线路 | 完整初始化的场景步骤 |
 | --- | --- | --- |
 | 1 | HK / JP 低延迟精品线路 | 低延迟 TCP 参数、fail2ban；工具及常驻服务另选 |
 | 2 | LA 等高延迟跨洲线路 | 高延迟 TCP 参数、fail2ban；工具及常驻服务另选 |
 | 3 | DE / 法兰克福 | DE 专用 TCP 参数、fail2ban；工具及常驻服务另选 |
 | 4 | 精简基础版 | 低延迟 TCP 参数、fail2ban，无 sing-box / NextTrace；iperf3 另选 |
-| 5 | 国内自托管服务 | Docker / Compose、NPM，以及选中的服务组；Watchtower 另选 |
+| 5 | Docker 自托管服务（原国内场景） | Docker / Compose、NPM，以及选中的服务组；Watchtower 另选 |
 | 0 | 退出 | 不修改系统 |
 
-先选择运行模式，再选择场景和组件：
+场景 `5` 可用于国内外 VPS，`VPS_SCENE=domestic` 的自动化名称保留兼容；镜像代理是否需要配置取决于服务器网络。
+
+各操作的具体范围：
 
 | 模式序号 | `VPS_MODE` | 操作范围 |
 | --- | --- | --- |
 | 1 | `full`（默认，直接回车选择） | 完整初始化：主机名、APT 更新/升级、基础工具、Starship、安全更新、日志限制，以及场景步骤 |
-| 2 | `components` | 仅安装所选组件及其依赖；更新 APT 索引，但强制跳过系统升级，不改主机名、Starship、安全策略或 TCP 参数 |
+| 2 | `components` | 安装 / 调整组件：仅安装所选组件及其依赖，或调整后台任务；更新 APT 索引，但强制跳过系统升级，不改主机名、Starship、安全策略或 TCP 参数 |
 | 3 | `status` | 只读检查现有服务；不安装依赖、不创建令牌文件或改权限；国内场景按所选服务验收 |
 | 4 | `update` | 国内复用已有 Compose、拉取并启动所选服务；境外对已安装的所选 NextTrace 重新运行原安装器，对 sb 执行脚本/内核更新；不重新初始化系统或设置定时任务 |
 
 完整初始化的公共步骤每次只执行一次；配置内容一致时不重复备份、写入或重启服务。补装工具建议选模式 `2`，查看状态选 `3`，主动升级服务选 `4`。普通安装模式不再主动拉取已有服务的新镜像，缺失镜像仍由 Compose 按其策略拉取。
 
-所有编号菜单均按选项逐行显示。选择场景 1–3 后，再选择境外组件；直接回车默认选择 `1`：
+最终方案用中文显示实际操作、服务与后台任务；组件 / 状态 / 更新模式不会把 TCP 调优列为待执行步骤，更新模式明确显示“更新工具”。
+
+所有编号菜单均按选项逐行显示。选择场景 1–3 后，再选择境外组件；直接回车默认选择 `1`。NextTrace 用于查看网络路由与链路，sing-box 提供代理服务及管理工具。更新模式只更新已安装的所选工具，状态模式不显示工具安装菜单：
 
 | 组件序号 | 安装内容 |
 | --- | --- |
@@ -72,30 +80,30 @@ bash vps-init.sh
 2) 不启用
 ```
 
-检测到已有服务、容器或更新任务时，会显示当前状态，并在上述两项后增加 `0) 保持现状`。已有任务同样默认选择 `1`；明确选择 `2` 才停用，选择 `0` 则不作调整。`ACTION=0` 仍接受显式环境变量，兼容此前的自动化，但新装菜单不再展示没有实际意义的“保持现状”。
+后台菜单会说明任务用途并显示当前状态。检测到已有服务、容器或更新任务时，选项 `2` 明确显示为“停用已有任务”，并增加 `0) 保持现状`。已有任务同样默认选择 `1`；明确选择 `2` 才停用，选择 `0` 则不作调整。`ACTION=0` 仍接受显式环境变量，兼容此前的自动化，但新装菜单不再展示没有实际意义的“保持现状”。sing-box 定时更新采用服务器时区的每日 04:00。
 
 sing-box 定时更新只有在已有 `/usr/local/bin/sb`，或本次选择新装 sing-box 时才默认询问并启用；只选 NextTrace、不选组件或精简版且没有已有 `sb` 时会跳过。已有健康原生内核但没有 `sb` 管理入口时也跳过；显式要求启用不适用的定时更新会在系统修改前报错。检查/更新模式不显示这些菜单，所有 ACTION 默认保持为 `0`，启停操作使用组件模式。
 
 iperf3 默认端口 `5201` 且无身份认证，默认启用常驻服务后应仅向可信 IP 放行。
 
-选择场景 5 后，可按以下序号选择服务组，多个序号用逗号分隔，例如 `1,4,6`：
+选择场景 5 后，先选择服务组，再设置 Watchtower。多个序号用逗号分隔，例如 `1,4,6`；`0` 和 `8` 必须单独使用。菜单用中文用途分组，并说明 NPM 是始终包含的反向代理与证书管理服务。状态模式对缺少或未运行的容器报告异常；更新模式复用已有 Compose 定义，所选服务尚无容器时，会按已有配置创建并启动：
 
 | 序号 | 服务组 | 服务 |
 | --- | --- | --- |
-| 1 | tools | Homepage、IT-Tools |
-| 2 | code | Gitea |
-| 3 | media | Navidrome、MeTube |
-| 4 | rss | RSSHub、Browserless、Redis |
-| 5 | files | File Browser、OpenList |
-| 6 | monitoring | Uptime Kuma、Beszel |
-| 7 | notes | Memos |
+| 1 | tools（导航与工具） | Homepage、IT-Tools |
+| 2 | code（代码托管） | Gitea |
+| 3 | media（音乐与下载） | Navidrome、MeTube |
+| 4 | rss（RSS 订阅） | RSSHub、Browserless、Redis |
+| 5 | files（文件管理） | File Browser、OpenList |
+| 6 | monitoring（服务监控） | Uptime Kuma、Beszel |
+| 7 | notes（笔记备忘） | Memos |
 | 8 | all | 全部可选服务 |
 | 0 | none | NPM 基础服务（默认，Watchtower 独立选择且默认启用） |
 
 整合版与旧版的差异：
 
 - 国内服务从默认全部启动改为默认仅基础组件，按需选择其余服务。只有选中 `tools` 时才要求输入 Homepage 域名。
-- 重跑及追加其他服务组时复用已有 Homepage 域名；通过 `HOMEPAGE_HOST` 可显式修改。FileBrowser 使用 UID/GID 1000，配置和数据库目录会预先准备并修正所有权；文件根目录为 `${STACK_DIR}/Filebrowser/files`，不再暴露 `/root`。旧部署需将希望管理的文件放入该专用目录。
+- 重跑及追加其他服务组时复用已有 Homepage 域名；通过 `HOMEPAGE_HOST` 可显式修改。FileBrowser 挂载宿主机 `/root`，以 UID/GID `0:0` 运行以便直接管理其中的文件；只预建缺失的应用配置 / 数据库目录，不更改 `/root` 或已有目录的权限与所有权。
 - Watchtower 固定为 `1.7.1`，启用前检查 Docker 服务端 API 范围并验证所选 API，避免默认 `1.25` 与 Docker 29 不兼容。它只更新带本脚本 `vps-init` scope 和 enable 标签的容器，不更新其他项目；Memos 排除在自动更新范围外。旧容器在组件模式重新生成配置并重建后才获得这些标签。
 - Docker 镜像站由部署者通过 `DOCKER_MIRRORS` 提供可信地址，整合版不内置第三方镜像站；未设置时保留已有镜像站，新安装则使用原始镜像源。
 - 四个境外场景统一按参数逐项探测可用性，未暴露或不可写的 TCP 参数会提示并跳过。HK / 精简版保留 16 MiB 缓冲上限，LA / DE 保留 32 MiB；DE 保留原有的发送缓冲默认值及专用参数。32 MiB 是自动调节上限，并非预分配内存。
@@ -112,11 +120,11 @@ iperf3 默认端口 `5201` 且无身份认证，默认启用常驻服务后应�
 
 ### 环境变量与无人值守选择
 
-交互输入均从 `/dev/tty` 读取。也可在执行前提供以下环境变量；正式运行前会检查场景、组件、端口、主机名等输入。`--plan` 只预览选择，不检查目标服务器环境、下载结果或容器可运行性。
+交互输入均从 `/dev/tty` 读取。也可在执行前提供以下环境变量；正式运行前会检查场景、组件、端口、主机名等输入。`--plan` 显示本机概况并预览选择，不做部署环境的强制校验，不验证下载结果或容器可运行性。
 
 | 环境变量 | 用途与默认值 |
 | --- | --- |
-| `VPS_MODE` | `1`–`4` 或 `full` / `components` / `status` / `update`，默认 `full` |
+| `VPS_MODE` | `1`–`4` 或 `full` / `components` / `status` / `update`，默认 `full`；`0` 退出 |
 | `VPS_SCENE` | `1`–`5`，也接受 `hk` / `la` / `de` / `minimal` / `domestic`；必须选择 |
 | `VPS_COMPONENTS` | 按上方组件表选择，默认 `1`（NextTrace + sing-box）；精简/国内固定为 `0`。此前设置过该变量时，请按新映射调整 |
 | `SERVICE_PROFILES` | 国内服务序号或名称，例如 `1,4,6` 或 `tools,rss,monitoring`；默认 `0`，全部用 `8` / `all` |
@@ -151,7 +159,7 @@ VPS_MODE=update VPS_SCENE=5 SERVICE_PROFILES=4 bash vps-init.sh --plan
 # 正式执行时去掉 --plan；请在目标 VPS 上以 root 运行
 ```
 
-2026-10-24 审计修复版本的 `vps-init.sh` SHA-256 为 `2c61115beb224e59f24909c674f8934b97516f526426c7e4c42890097dea244c`。上机测试前可用 `sha256sum vps-init.sh` 核对下载内容；Gist 下载也应得到同一摘要。下方旧 Gist 地址仍对应原有独立入口，不应作为整合版下载地址。
+GitHub 与整合版 Gist 分别同步。核对版本时，可对两个来源下载的脚本分别运行 `sha256sum`，相同版本应得到相同摘要。下方旧 Gist 地址仍对应原有独立入口，不应作为整合版下载地址。
 
 ### Memos 镜像与已有数据升级
 
@@ -267,6 +275,8 @@ bash tests/singbox-install-test.sh
 bash tests/audit-regression-test.sh
 ```
 
+`unified-init-test.sh` 另覆盖系统概况只读探测、缺失信息回退、菜单前显示概况、操作菜单直接退出，以及先选服务组再选 Watchtower 的顺序与各模式方案范围。
+
 `audit-regression-test.sh` 覆盖本轮审计的失败路径、配置保留和镜像模板，若本机有独立 Compose CLI，可设置 `COMPOSE_TEST_BIN=/path/to/docker-compose`，用真实 CLI 校验全部 15 个服务，无需 daemon。临时 Bash/工具兼容环境中的测试不能替代 Linux 上真实 systemd / Docker 验收。
 
 本次主要维护整合入口；旧版独立脚本同步了 APT 严格错误处理与境外主机名长度、hosts 地址匹配修正，其他增强逻辑请使用整合入口。
@@ -276,6 +286,20 @@ bash tests/audit-regression-test.sh
 ## 国内 VPS 数据与凭据
 
 `domestic-vps-init.sh` 为旧版国内服务入口，当前未提供对应的远程运行地址；整合版选择场景 `5` 使用同一套服务定义。
+
+整合版与旧版国内入口使用以下固定宿主机目录，路径区分大小写，且不随 `STACK_DIR` 改变：
+
+| 用途 | VPS 宿主机目录 | 容器内目录 | 访问方式 |
+| --- | --- | --- | --- |
+| FileBrowser 管理的文件 | `/root` | `/srv` | 读写，容器以 root 运行 |
+| Navidrome 音乐库 | `/Music` | `/music` | 只读 |
+| OpenList 应用数据 | `/OpenList` | `/opt/openlist/data` | 读写 |
+
+FileBrowser 的配置和数据库仍保存在 `${STACK_DIR}/Filebrowser/config`、`${STACK_DIR}/Filebrowser/database`；Navidrome 应用数据库仍在 `${STACK_DIR}/navidrome/data`。其他服务的数据路径不变。`/OpenList` 是 OpenList 自身配置与数据库目录，后台添加的本地存储需要另行挂载对应文件目录。
+
+已有部署切换目录前，先备份数据并停止对应容器，再将原 `${STACK_DIR}/music` 中的音乐放入 `/Music`、原 `${STACK_DIR}/openlist/data` 的内容迁入 `/OpenList`，保留文件权限；目标目录已有内容时先核对，避免覆盖。脚本不会自动搬迁或删除旧目录。此前 `${STACK_DIR}/Filebrowser/files` 中的文件也会保留，需要继续通过 FileBrowser 管理的文件可自行移入 `/root` 下。
+
+应用新挂载需要使用操作 `2`（安装 / 调整组件）、场景 `5`，选择服务组 `3,5` 重新生成配置并重建相应容器；操作 `4` 沿用原 Compose，不会更改旧挂载。已配置的后台任务可以选择 `0` 保持现状。
 
 Browserless 认证令牌在部署时随机生成，保存在服务器的 `/opt/stacks/.browserless.env`（权限 0600），重跑脚本时复用，RSSHub 与 Browserless 共享同一令牌。整合版可通过 `STACK_DIR` 改变目录。请勿上传此文件。手动管理容器时，在服务目录中使用 `docker compose --env-file .browserless.env <子命令>`；启动可选服务时还需带对应的 `--profile` 参数。
 

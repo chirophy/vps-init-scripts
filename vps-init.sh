@@ -234,8 +234,67 @@ is_valid_domain() {
 }
 
 
-# ---------- 场景与组件选择（不修改系统） ----------
+# ---------- 系统概况与操作选择（不修改系统） ----------
 die() { error "$1" >&2; exit 1; }
+
+# 在子 Shell 中读取系统信息，避免 os-release 的变量影响后续部署。
+# 所有探测均为本机只读操作；精简系统缺少命令或 /proc 字段时显示“未知”。
+print_system_overview() (
+    local os_name kernel arch host cpu_count cpu_model memory swap disk uptime_text load virt init_state user_name
+    step 'Linux 系统概况'
+    kernel=$(uname -r 2>/dev/null || true)
+    arch=$(uname -m 2>/dev/null || true)
+    host=$(hostname 2>/dev/null || true)
+    os_name=$(uname -s 2>/dev/null || true)
+    if [[ -r /etc/os-release ]]; then
+        # shellcheck disable=SC1091
+        source /etc/os-release
+        os_name=${PRETTY_NAME:-${NAME:-$os_name}}
+    fi
+    cpu_count=$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)
+    cpu_model=''
+    memory='' swap='' uptime_text='' load=''
+    if [[ -r /proc/cpuinfo ]]; then
+        cpu_model=$(awk -F ': *' '/^(model name|Hardware|Processor)[[:space:]]*:/ {print $2; exit}' /proc/cpuinfo 2>/dev/null || true)
+    fi
+    if [[ -r /proc/meminfo ]]; then
+        memory=$(awk '/^MemTotal:/ {total=$2} /^MemAvailable:/ {available=$2; found=1}
+            END {if (total>0) {printf "总计 %.0f MiB", total/1024; if (found) printf " / 可用 %.0f MiB", available/1024}}' /proc/meminfo 2>/dev/null || true)
+        swap=$(awk '/^SwapTotal:/ {total=$2; found=1} /^SwapFree:/ {free=$2}
+            END {if (found) {if (total==0) printf "未配置"; else printf "总计 %.0f MiB / 可用 %.0f MiB", total/1024, free/1024}}' /proc/meminfo 2>/dev/null || true)
+    fi
+    disk=$(LC_ALL=C df -Pk / 2>/dev/null | awk 'NR==2 {printf "总计 %.1f GiB / 可用 %.1f GiB / 已用 %s", $2/1048576, $4/1048576, $5}' || true)
+    if [[ -r /proc/uptime ]]; then
+        uptime_text=$(awk '{printf "%d 天 %d 小时 %d 分钟", $1/86400, ($1%86400)/3600, ($1%3600)/60}' /proc/uptime 2>/dev/null || true)
+    fi
+    if [[ -r /proc/loadavg ]]; then
+        load=$(awk '{printf "%s / %s / %s（1 / 5 / 15 分钟）", $1, $2, $3}' /proc/loadavg 2>/dev/null || true)
+    fi
+    virt=$(systemd-detect-virt 2>/dev/null || true)
+    [[ "$virt" != none ]] || virt='未检测到虚拟化'
+    init_state='未检测到运行中的 systemd'
+    [[ ! -d /run/systemd/system ]] || init_state='systemd 已运行'
+    user_name=$(id -un 2>/dev/null || true)
+    printf '  主机名称：%s\n' "${host:-未知}"
+    printf '  操作系统：%s\n' "${os_name:-未知}"
+    printf '  内核架构：%s / %s\n' "${kernel:-未知}" "${arch:-未知}"
+    printf '  CPU：%s 逻辑核%s\n' "${cpu_count:-未知}" "${cpu_model:+ / $cpu_model}"
+    printf '  内存：%s\n  Swap：%s\n' "${memory:-未知}" "${swap:-未知}"
+    printf '  根分区：%s\n' "${disk:-未知}"
+    printf '  运行时长：%s\n  系统负载：%s\n' "${uptime_text:-未知}" "${load:-未知}"
+    printf '  虚拟化：%s\n  服务管理：%s\n' "${virt:-未知}" "$init_state"
+    printf '  当前用户：%s（UID=%s）\n' "${user_name:-未知}" "$EUID"
+    info '运行要求：Debian 11+ / Ubuntu 22.04+、root 权限、运行中的 systemd；正式执行前会校验。'
+)
+
+mode_label() {
+    case "$1" in
+        full) printf '完整初始化' ;;
+        components) printf '安装 / 调整组件' ;;
+        status) printf '查看运行状态（只读）' ;;
+        update) printf '更新已有组件 / 服务' ;;
+    esac
+}
 
 require_choice() {
     local variable=$1 prompt=$2 fallback=${3-}
@@ -246,19 +305,27 @@ require_choice() {
 }
 
 select_mode() {
-    echo '运行模式：'
+    step '选择操作'
     echo '  1) 完整初始化（默认）'
-    echo '  2) 仅安装组件'
-    echo '  3) 检查状态'
-    echo '  4) 更新已部署组件/服务'
-    require_choice VPS_MODE '请输入模式序号（默认 1）: ' 1
+    echo '     适合新机器：配置系统基础环境，再安装所选工具或服务。'
+    echo '  2) 安装 / 调整组件'
+    echo '     适合已有机器：补装工具、部署服务组，或调整后台任务。'
+    echo '     不做全系统升级，不改主机名、TCP 参数及系统安全策略。'
+    echo '  3) 查看运行状态（只读）'
+    echo '     检查所选范围的现有服务，不安装或修改配置。'
+    echo '  4) 更新已有组件 / 服务'
+    echo '     更新已安装工具或拉取服务镜像；沿用已有配置。'
+    echo '  0) 退出脚本'
+    require_choice VPS_MODE '请选择操作 [0-4，回车=1]: ' 1
     case "$VPS_MODE" in
+        0) exit 0 ;;
         1|full) VPS_MODE=full ;;
         2|components) VPS_MODE=components ;;
         3|status) VPS_MODE=status ;;
         4|update) VPS_MODE=update ;;
-        *) die '模式无效：请输入 1-4 或 full/components/status/update' ;;
+        *) die '模式无效：请输入 0-4 或 full/components/status/update' ;;
     esac
+    info "已选择：$(mode_label "$VPS_MODE")"
 }
 
 # 安装模式默认启用适用的后台任务；已有任务才展示“保持现状”。
@@ -266,11 +333,17 @@ select_mode() {
 
 select_background_actions() {
     if [[ "$VPS_MODE" == full || "$VPS_MODE" == components ]]; then
+        step '设置后台任务'
+        echo '  以下任务独立选择；启用后会持续运行或按计划执行。'
         if [[ "$VPS_SCENE" == domestic ]]; then
+            echo '  Watchtower：定时更新本脚本管理的容器；Memos 不参与自动更新。'
             choose_background_action WATCHTOWER_ACTION 'Watchtower 自动更新'
         else
+            printf '  iperf3：启动网络测速服务，端口 %s；客户端命令：iperf3 -c 服务器地址 -p %s。\n' "${IPERF3_PORT:-5201}" "${IPERF3_PORT:-5201}"
+            echo '  此服务无身份认证，请仅向可信 IP 放行端口。'
             choose_background_action IPERF3_ACTION 'iperf3 常驻服务'
             if sb_update_supported; then
+                echo '  sing-box：每天 04:00（服务器时区）更新管理脚本与内核。'
                 choose_background_action SB_UPDATE_ACTION 'sing-box 定时更新'
             else
                 [[ "${SB_UPDATE_ACTION:-0}" != 1 ]] || die '启用定时更新需要已有 sb 管理脚本，或本次选择新装 sing-box'
@@ -338,18 +411,18 @@ choose_background_action() {
     local variable=$1 label=$2
     probe_background_state "$variable"
     show_background_menu "$label" "$BACKGROUND_PRESENT" "$BACKGROUND_STATE"
-    require_choice "$variable" '请输入选项序号（默认 1）: ' 1
+    require_choice "$variable" '请选择后台任务操作（回车=1）: ' 1
 }
 
 show_background_menu() {
-    printf '%s：\n' "$1"
-    if [[ "${2:-0}" == 1 ]]; then printf '  当前状态：%s\n' "$3"; fi
+    printf '\n%s：\n' "$1"
+    printf '  当前状态：%s\n' "${3:-未配置}"
     echo '  1) 启用（默认）'
     if [[ "${2:-0}" == 1 ]]; then
-        echo '  2) 不启用（停用已有任务）'
+        echo '  2) 停用已有任务'
         echo '  0) 保持现状'
     else
-        echo '  2) 不启用'
+        echo '  2) 不启用（跳过此任务）'
     fi
 }
 
@@ -362,23 +435,33 @@ background_action_label() {
 }
 
 select_scene() {
-    echo '请选择场景：'
-    echo '  1) HK / JP 低延迟精品线路'
-    echo '  2) LA 等高延迟、长距离大带宽线路'
-    echo '  3) DE / 法兰克福线路（保留专用 TCP 参数）'
-    echo '  4) 精简基础版（低延迟参数，无 sing-box / NextTrace）'
-    echo '  5) 国内 Docker / Compose 自托管服务'
-    echo '  0) 退出'
-    require_choice VPS_SCENE '请输入场景序号: '
+    step '选择服务器用途 / 线路'
+    echo '  网络工具与线路配置：'
+    echo '  1) HK / JP 精品线路 — 低延迟线路，NextTrace / sing-box 另选'
+    echo '  2) LA 等跨洲线路 — 高延迟、长距离大带宽，工具另选'
+    echo '  3) DE / 法兰克福 — 保留 DE 专用 TCP 方案，工具另选'
+    echo '  4) 精简基础环境 — 低延迟 TCP 方案，不安装 NextTrace / sing-box'
+    echo ''
+    echo '  自托管应用：'
+    echo '  5) Docker 服务 — NPM 反向代理 + 按需选择的应用（原国内场景）'
+    echo '     国内外 VPS 均可选择；是否需要镜像代理取决于服务器网络。'
+    echo '  0) 退出脚本'
+    if [[ "${VPS_MODE:-full}" == full ]]; then
+        echo '  提示：选项 1-4 会配置对应 TCP 参数和 fail2ban；选项 5 部署 Docker 服务。'
+    else
+        echo '  提示：此处只确定操作范围；当前操作不会重新配置 TCP 参数和系统基础环境。'
+    fi
+    require_choice VPS_SCENE '请选择用途 / 线路 [0-5，无默认值]: '
     case "$VPS_SCENE" in
         0) exit 0 ;;
         1|hk|jp) VPS_SCENE=hk; SCENE_NAME='HK / JP 精品线路' ;;
         2|la) VPS_SCENE=la; SCENE_NAME='LA 高延迟线路' ;;
         3|de) VPS_SCENE=de; SCENE_NAME='DE / 法兰克福线路' ;;
         4|minimal) VPS_SCENE=minimal; SCENE_NAME='精简基础版' ;;
-        5|domestic) VPS_SCENE=domestic; SCENE_NAME='国内自托管服务' ;;
+        5|domestic) VPS_SCENE=domestic; SCENE_NAME='Docker 自托管服务' ;;
         *) die '场景无效：请输入 0-5 或 hk/la/de/minimal/domestic' ;;
     esac
+    info "已选择：$SCENE_NAME"
 }
 
 select_components() {
@@ -390,12 +473,18 @@ select_components() {
         [[ "${VPS_COMPONENTS:-0}" == 0 ]] || die '精简版和国内版不支持 VPS_COMPONENTS；境外工具请选择场景 1-3'
         VPS_COMPONENTS=0
     else
-        echo '境外组件：'
+        if [[ "${VPS_MODE:-full}" == update ]]; then
+            step '选择要更新的工具'
+            echo '  只更新已安装工具；尚未安装时请改用“安装 / 调整组件”。'
+        else
+            step '选择要安装的工具'
+        fi
+        echo '  NextTrace：查看网络路由与链路；sing-box：代理服务及管理工具。'
         echo '  1) NextTrace + sing-box（默认）'
         echo '  2) 仅 NextTrace'
         echo '  3) 仅 sing-box'
         echo '  0) 不选择'
-        require_choice VPS_COMPONENTS '请输入组件序号（默认 1）: ' 1
+        require_choice VPS_COMPONENTS '请选择工具 [0-3，回车=1]: ' 1
         case "$VPS_COMPONENTS" in 0|1|2|3) ;; *) die '组件序号必须为 0-3' ;; esac
     fi
     INSTALL_NEXTTRACE=0
@@ -414,17 +503,26 @@ select_services() {
     SELECTED_PROFILE_NAMES=()
     local profile selection item
     local -a requested=()
-    echo '国内服务组（NPM 为基础服务，Watchtower 在安装模式中另选）：'
-    echo '  1) Homepage + IT-Tools'
-    echo '  2) Gitea'
-    echo '  3) Navidrome + MeTube'
-    echo '  4) RSSHub + Browserless + Redis'
-    echo '  5) File Browser + OpenList'
-    echo '  6) Uptime Kuma + Beszel'
-    echo '  7) Memos'
-    echo '  8) 全部'
-    echo '  0) 仅基础组件'
-    require_choice SERVICE_PROFILES '输入序号，多个用逗号分隔（默认 0）: ' 0
+    step "选择服务组 · $(mode_label "${VPS_MODE:-full}")"
+    echo '  基础服务：NPM（Nginx Proxy Manager，反向代理与证书管理），始终包含。'
+    if [[ "${VPS_MODE:-full}" == status ]]; then
+        echo '  请选择要检查的服务组；缺少容器或服务未启动时会报告异常。'
+    elif [[ "${VPS_MODE:-full}" == update ]]; then
+        echo '  复用已有 Compose 定义；所选服务尚无容器时，会按已有配置创建并启动。'
+    else
+        echo '  Watchtower 自动更新稍后单独选择；选择服务组会生成 / 更新 Compose 配置。'
+    fi
+    echo '  1) 导航与工具 — Homepage + IT-Tools'
+    echo '  2) 代码托管 — Gitea'
+    echo '  3) 音乐与下载 — Navidrome + MeTube'
+    echo '  4) RSS 订阅 — RSSHub + Browserless + Redis'
+    echo '  5) 文件管理 — File Browser + OpenList'
+    echo '  6) 服务监控 — Uptime Kuma + Beszel'
+    echo '  7) 笔记备忘 — Memos'
+    echo '  8) 全部可选服务组'
+    echo '  0) 仅基础服务 NPM（默认）'
+    echo '  可多选，例如 1,4,6；0 和 8 需单独使用。未选中的已有服务不会被卸载。'
+    require_choice SERVICE_PROFILES '请选择服务组 [回车=0]: ' 0
     selection=${SERVICE_PROFILES//[[:space:]]/}
     case "$selection" in
         8|all) requested=("${AVAILABLE_PROFILES[@]}") ;;
@@ -446,12 +544,32 @@ select_services() {
     for profile in "${AVAILABLE_PROFILES[@]}"; do
         if [[ -n "${ENABLED_PROFILES[$profile]+x}" ]]; then
             SELECTED_PROFILE_NAMES+=("$profile")
-            COMPOSE_PROFILE_ARGS+=(--profile "$profile")
         fi
+    done
+    build_compose_profile_args
+}
+
+build_compose_profile_args() {
+    local profile
+    COMPOSE_PROFILE_ARGS=()
+    for profile in "${SELECTED_PROFILE_NAMES[@]}"; do
+        COMPOSE_PROFILE_ARGS+=(--profile "$profile")
     done
     if [[ "${WATCHTOWER_ACTION:-0}" == 1 ]]; then
         COMPOSE_PROFILE_ARGS+=(--profile watchtower)
     fi
+}
+
+profile_label() {
+    case "$1" in
+        tools) printf '导航与工具（Homepage、IT-Tools）' ;;
+        code) printf '代码托管（Gitea）' ;;
+        media) printf '音乐与下载（Navidrome、MeTube）' ;;
+        rss) printf 'RSS 订阅（RSSHub、Browserless、Redis）' ;;
+        files) printf '文件管理（File Browser、OpenList）' ;;
+        monitoring) printf '服务监控（Uptime Kuma、Beszel）' ;;
+        notes) printf '笔记备忘（Memos）' ;;
+    esac
 }
 
 validate_options() {
@@ -492,24 +610,50 @@ validate_options() {
 }
 
 print_plan() {
-    step '执行方案'
-    info "场景：$SCENE_NAME"
-    info "模式：${VPS_MODE:-full}"
+    local profile tools=''
+    step '本次执行方案'
+    info "操作：$(mode_label "${VPS_MODE:-full}")"
+    info "用途 / 线路：$SCENE_NAME"
     if [[ "${VPS_MODE:-full}" == full ]]; then
-        info "公共步骤：主机名（可跳过）、APT 更新（系统升级=${UPGRADE_SYSTEM:-1}）、Starship=${INSTALL_STARSHIP:-1}、自动安全更新、journald 100M"
+        info '系统配置：主机名（可跳过）、APT 索引更新、基础工具、自动安全更新、日志限制 100M'
+        if [[ "${UPGRADE_SYSTEM:-1}" == 1 ]]; then info '系统软件包：执行升级'; else info '系统软件包：跳过升级'; fi
+        if [[ "${INSTALL_STARSHIP:-1}" == 1 ]]; then info '终端提示符：配置 Starship'; else info '终端提示符：跳过 Starship'; fi
     elif [[ "$VPS_MODE" == components ]]; then
         info '仅安装所选组件及依赖，不升级系统，不修改主机名、安全策略或 TCP 参数'
-    else
-        info '复用已有配置；检查模式只读，更新模式仅更新选择的已部署组件/服务'
+    elif [[ "$VPS_MODE" == status ]]; then
+        info '只读检查，不安装软件、不修改配置或后台任务'
+    elif [[ "$VPS_MODE" == update ]]; then
+        info '复用已有配置，仅更新所选的已部署组件 / 服务，不重新初始化系统'
     fi
     if [[ "$VPS_SCENE" == domestic ]]; then
-        info "Docker / Compose；基础服务 NPM；可选服务：${SELECTED_PROFILE_NAMES[*]:-无}；Watchtower=$(background_action_label "$WATCHTOWER_ACTION")"
+        case "${VPS_MODE:-full}" in
+            full|components) info '服务操作：检查 / 安装 Docker 与 Compose，生成配置并启动所选服务' ;;
+            status) info '服务操作：读取已有 Compose，检查所选容器运行 / 健康状态' ;;
+            update) info '服务操作：读取已有 Compose，拉取所选镜像并重新启动服务' ;;
+        esac
+        info '服务范围：NPM（反向代理与证书管理）'
+        for profile in "${SELECTED_PROFILE_NAMES[@]}"; do
+            printf '  + %s\n' "$(profile_label "$profile")"
+        done
+        info "Watchtower 自动更新：$(background_action_label "$WATCHTOWER_ACTION")"
         info "服务目录：$STACK_DIR"
     else
-        info "TCP 参数方案：$VPS_SCENE；fail2ban；iperf3=$(background_action_label "$IPERF3_ACTION")（端口 $IPERF3_PORT）"
-        info "安装 NextTrace=$INSTALL_NEXTTRACE，安装 sing-box=$INSTALL_SING_BOX，定时更新=$(background_action_label "$SB_UPDATE_ACTION")"
+        if [[ "${VPS_MODE:-full}" == full ]]; then info "线路配置：应用 $SCENE_NAME 的 TCP 参数，配置 fail2ban"; fi
+        [[ "$INSTALL_NEXTTRACE" != 1 ]] || tools='NextTrace'
+        [[ "$INSTALL_SING_BOX" != 1 ]] || tools="${tools:+$tools、}sing-box"
+        case "${VPS_MODE:-full}" in
+            full|components) info "安装工具：${tools:-无}" ;;
+            update) info "更新工具：${tools:-无}" ;;
+            status) info '检查范围：fail2ban、iperf3、cron、TCP 拥塞控制、sing-box 定时任务' ;;
+        esac
+        if [[ "${VPS_MODE:-full}" == full || "$VPS_MODE" == components ]]; then
+            info "iperf3 测速服务：$(background_action_label "$IPERF3_ACTION")（端口 $IPERF3_PORT）"
+            info "sing-box 每日更新：$(background_action_label "$SB_UPDATE_ACTION")"
+        fi
     fi
-    info '组件选择不卸载已有软件；后台任务选择“不启用”会停用对应的已有任务。'
+    if [[ "${VPS_MODE:-full}" == full || "$VPS_MODE" == components ]]; then
+        info '未选择的组件不会卸载；后台任务选择“停用”会停止对应的已有任务。'
+    fi
 }
 
 preflight() {
@@ -1310,15 +1454,11 @@ watchtower_api_version() {
 prepare_filebrowser_storage() {
     [[ -n "${ENABLED_PROFILES[files]+x}" ]] || return 0
     local directory
-    for directory in "$STACK_DIR/Filebrowser" "$STACK_DIR/Filebrowser/config" "$STACK_DIR/Filebrowser/database" "$STACK_DIR/Filebrowser/files"; do
+    for directory in "$STACK_DIR/Filebrowser" "$STACK_DIR/Filebrowser/config" "$STACK_DIR/Filebrowser/database"; do
         [[ ! -L "$directory" ]] || { error "拒绝修改符号链接目录：$directory"; return 1; }
-        if [[ ! -d "$directory" ]]; then install -d -m 0750 -o 1000 -g 1000 "$directory" || return 1; fi
+        if [[ ! -d "$directory" ]]; then install -d -m 0750 -o 0 -g 0 "$directory" || return 1; fi
     done
-    # 仅修复本应用配置与数据库，不更改 /root 或用户共享文件的递归权限。
-    for directory in config database; do
-        find "$STACK_DIR/Filebrowser/$directory" -xdev -exec chown --no-dereference 1000:1000 {} + || return 1
-    done
-    chown --no-dereference 1000:1000 "$STACK_DIR/Filebrowser/files" || return 1
+    # FileBrowser 以 root 访问 /root；保留已有配置目录及 /root 的所有权和权限。
 }
 
 deploy_services() {
@@ -1439,7 +1579,7 @@ services:
     profiles: ["media"]
     volumes:
       - ./navidrome/data:/data
-      - ./music:/music:ro
+      - /Music:/music:ro
 
   metube:
     labels: *vps-labels
@@ -1509,9 +1649,10 @@ services:
     image: filebrowser/filebrowser:latest
     container_name: filebrowser
     profiles: ["files"]
-    user: "1000:1000"
+    # 需要管理宿主机 /root；不放宽 /root 的文件权限。
+    user: "0:0"
     volumes:
-      - ./Filebrowser/files:/srv
+      - /root:/srv
       - ./Filebrowser/database:/database
       - ./Filebrowser/config:/config
     restart: unless-stopped
@@ -1524,7 +1665,7 @@ services:
     user: "0:0"
     restart: unless-stopped
     volumes:
-      - ./openlist/data:/opt/openlist/data
+      - /OpenList:/opt/openlist/data
     environment:
       - UMASK=022
   # ==================== 监控系统 ====================
@@ -1859,20 +2000,24 @@ run_installer() (
 show_help() {
     cat <<'HELP'
 用法：bash vps-init.sh [--plan | --help]
-  --plan  选择并打印方案，不安装软件或修改系统；可在普通用户下执行。
+  --plan  显示本机概况、选择并打印方案，不安装软件或修改系统；可在普通用户下执行。
   --help  显示帮助。
+启动顺序：本机系统概况 → 选择操作 → 选择用途 / 线路 → 选择工具 / 服务组 → 后台任务 → 执行方案。
+系统概况只读取本机信息，不联网探测；正式执行前校验系统版本、root 权限及 systemd。
+操作（VPS_MODE，保留原编号）：
+  1) full：完整初始化，适合新机器（回车默认选择）
+  2) components：安装 / 调整组件，适合补装工具、部署服务、调整后台任务
+  3) status：查看运行状态（只读）
+  4) update：更新已有组件 / 服务，复用当前配置
+  0) 退出
 场景（VPS_SCENE）：
   1) hk / jp：HK / JP 精品线路
   2) la：LA 高延迟线路
   3) de：DE / 法兰克福线路
   4) minimal：精简基础版
-  5) domestic：国内自托管服务
+  5) domestic：Docker 自托管服务（原国内场景，国内外 VPS 均可选）
   0) 退出
-模式（VPS_MODE）：
-  1) full：完整初始化（直接回车默认选择）
-  2) components：仅安装组件
-  3) status：检查状态
-  4) update：更新已部署组件/服务
+只有完整初始化才应用场景中的系统 / TCP 配置；其他操作仅以场景确定组件范围。
 境外组件（VPS_COMPONENTS）：
   1) NextTrace + sing-box（直接回车默认选择）
   2) 仅 NextTrace
@@ -1880,19 +2025,20 @@ show_help() {
   0) 不选择
 后台选项（IPERF3_ACTION / WATCHTOWER_ACTION / SB_UPDATE_ACTION）：
   1) 启用（安装模式中适用的任务默认选择）
-  2) 不启用（已有任务将停用）
+  2) 新任务不启用；已有任务停用
   0) 保持现状（已有任务时显示，也接受显式环境变量）
 新装时菜单只显示上述前两项；检查/更新模式不显示后台菜单，ACTION 默认保持为 0。
-国内服务组（SERVICE_PROFILES，支持逗号多选，也接受对应 profile 名称）：
-  1) tools：Homepage + IT-Tools
-  2) code：Gitea
-  3) media：Navidrome + MeTube
-  4) rss：RSSHub + Browserless + Redis
-  5) files：File Browser + OpenList
-  6) monitoring：Uptime Kuma + Beszel
-  7) notes：Memos
+Docker 服务组（SERVICE_PROFILES，支持逗号多选，也接受对应 profile 名称）：
+  1) tools：导航与工具（Homepage + IT-Tools）
+  2) code：代码托管（Gitea）
+  3) media：音乐与下载（Navidrome + MeTube）
+  4) rss：RSS 订阅（RSSHub + Browserless + Redis）
+  5) files：文件管理（File Browser + OpenList）
+  6) monitoring：服务监控（Uptime Kuma + Beszel）
+  7) notes：笔记备忘（Memos）
   8) all：全部服务组
-  0) none：仅基础组件（默认）
+  0) none：仅基础服务 NPM（默认，反向代理与证书管理）
+例如 1,4,6；0 和 8 需单独使用。后台任务单独选择，未选择的已有服务不会被卸载。
 其他变量：VPS_HOSTNAME、UPGRADE_SYSTEM、INSTALL_STARSHIP、RESET_STARSHIP_CONFIG、
           IPERF3_PORT、HOMEPAGE_HOST、MEMOS_IMAGE、STACK_DIR、DOCKER_MIRRORS、SERVICE_WAIT_TIMEOUT。
 HELP
@@ -1907,11 +2053,16 @@ main() {
         *) die '未知参数，使用 --help 查看用法' ;;
     esac
     (( $# <= 1 )) || die '参数过多，使用 --help 查看用法'
+    print_system_overview
+    if (( plan_only == 1 )); then
+        info '当前为方案预览：只读取本机信息和打印选择，不安装软件或修改系统。'
+    fi
     select_mode
     select_scene
     select_components
-    select_background_actions
     if [[ "$VPS_SCENE" == domestic ]]; then select_services; fi
+    select_background_actions
+    if [[ "$VPS_SCENE" == domestic ]]; then build_compose_profile_args; fi
     validate_options
     print_plan
     (( plan_only == 0 )) || return 0
