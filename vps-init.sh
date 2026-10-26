@@ -1,13 +1,13 @@
 #!/bin/bash
 # ============================================================
-# VPS 一键初始化脚本（整合入口，单文件独立运行）
-# 适用系统：Debian 11+ / Ubuntu 22.04+
-# 按序号选择线路与组件；公共步骤仅执行一次。原独立版本保留供迁移核对。
+# VPS һ����ʼ���ű���������ڣ����ļ��������У�
+# ����ϵͳ��Debian 11+ / Ubuntu 22.04+
+# �����ѡ����·����������������ִ��һ�Ρ�ԭ�����汾������Ǩ�ƺ˶ԡ�
 # ============================================================
 
 set -euo pipefail
 
-# ---------- 颜色定义 ----------
+# ---------- ��ɫ���� ----------
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -19,18 +19,18 @@ warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1"; }
 step()  { echo -e "\n${CYAN}======== $1 ========${NC}"; }
 
-# ---------- Starship 公共配置（各版本保持一致） ----------
-# 使用子 Shell 清理临时文件，不改变主脚本或调用者的 Shell。
+# ---------- Starship �������ã����汾����һ�£� ----------
+# ʹ���� Shell ������ʱ�ļ������ı����ű�������ߵ� Shell��
 configure_starship() (
     case "${INSTALL_STARSHIP:-1}" in
-        0) info "已通过 INSTALL_STARSHIP=0 跳过 Starship"; return 0 ;;
+        0) info "��ͨ�� INSTALL_STARSHIP=0 ���� Starship"; return 0 ;;
         1) ;;
-        *) error "INSTALL_STARSHIP 仅支持 0 或 1"; return 1 ;;
+        *) error "INSTALL_STARSHIP ��֧�� 0 �� 1"; return 1 ;;
     esac
 
     case "${RESET_STARSHIP_CONFIG:-0}" in
         0|1) ;;
-        *) error "RESET_STARSHIP_CONFIG 仅支持 0 或 1"; return 1 ;;
+        *) error "RESET_STARSHIP_CONFIG ��֧�� 0 �� 1"; return 1 ;;
     esac
 
     local account_home work_dir installer login_file file staged backup_id i
@@ -38,7 +38,7 @@ configure_starship() (
     local -a targets staged_files
     account_home=$(getent passwd "$EUID" | cut -d: -f6)
     if [[ "$account_home" != /* || ! -d "$account_home" ]]; then
-        error "无法确定当前 root 账号的主目录，停止配置 Starship"
+        error "�޷�ȷ����ǰ root �˺ŵ���Ŀ¼��ֹͣ���� Starship"
         return 1
     fi
     work_dir=$(mktemp -d)
@@ -46,29 +46,29 @@ configure_starship() (
     installer="$work_dir/install.sh"
 
     if command -v starship >/dev/null 2>&1; then
-        info "Starship 已安装，将复用现有版本"
+        info "Starship �Ѱ�װ�����������а汾"
     else
-        info "从 Starship 官方站点下载安装程序..."
-        # 先完整下载再执行，下载失败时不执行残缺脚本。
+        info "�� Starship �ٷ�վ�����ذ�װ����..."
+        # ������������ִ�У�����ʧ��ʱ��ִ�в�ȱ�ű���
         if ! curl -fsSL --connect-timeout 15 --max-time 120 \
             https://starship.rs/install.sh -o "$installer"; then
-            warn "Starship 安装程序下载失败，跳过终端美化；其他初始化继续"
+            warn "Starship ��װ��������ʧ�ܣ������ն�������������ʼ������"
             return 0
         fi
         install -d -m 0755 /usr/local/bin
         if ! sh "$installer" --yes --bin-dir /usr/local/bin; then
-            warn "Starship 安装失败，跳过终端美化；其他初始化继续"
+            warn "Starship ��װʧ�ܣ������ն�������������ʼ������"
             return 0
         fi
         hash -r
     fi
     if ! starship --version; then
-        warn "Starship 无法运行，保留现有 Shell 配置；其他初始化继续"
+        warn "Starship �޷����У��������� Shell ���ã�������ʼ������"
         return 0
     fi
 
     cat > "$work_dir/starship.toml" << 'STARSHIP_CONFIG_EOF'
-# VPS 简洁单行提示符：无需 Nerd Font。
+# VPS ��൥����ʾ�������� Nerd Font��
 add_newline = false
 format = '$username$hostname$directory$git_branch$cmd_duration$character'
 
@@ -104,8 +104,8 @@ success_symbol = '[>](bold green)'
 error_symbol = '[>](bold red)'
 STARSHIP_CONFIG_EOF
 
-    # .bash_profile / .bash_login 存在时，Bash 登录不一定读取 .profile。
-    # 同时配置 .bashrc 和实际生效的登录文件；同一个 Shell 只初始化一次。
+    # .bash_profile / .bash_login ����ʱ��Bash ��¼��һ����ȡ .profile��
+    # ͬʱ���� .bashrc ��ʵ����Ч�ĵ�¼�ļ���ͬһ�� Shell ֻ��ʼ��һ�Ρ�
     login_file="$account_home/.profile"
     for file in "$account_home/.bash_profile" "$account_home/.bash_login" "$account_home/.profile"; do
         if [[ -f "$file" ]]; then
@@ -120,20 +120,20 @@ STARSHIP_CONFIG_EOF
         staged=${staged_files[$i]}
         : > "$staged"
         if [[ -e "$file" ]]; then
-            # 只替换本脚本管理的区块，保留用户的其他配置。
+            # ֻ�滻���ű����������飬�����û����������á�
             if ! awk '
                 $0 == "# >>> vps-init starship >>>" { if (inside) exit 1; inside=1; next }
                 $0 == "# <<< vps-init starship <<<" { if (!inside) exit 1; inside=0; next }
                 !inside { print }
                 END { if (inside) exit 1 }
             ' "$file" > "$staged"; then
-                error "$file 的 Starship 标记不完整，未修改原文件"
+                error "$file �� Starship ��ǲ�������δ�޸�ԭ�ļ�"
                 return 1
             fi
         fi
         cat >> "$staged" << 'STARSHIP_INIT_EOF'
 # >>> vps-init starship >>>
-# 仅在交互式 Bash 中加载，避免其他 Shell 解析 Bash 初始化代码。
+# ���ڽ���ʽ Bash �м��أ��������� Shell ���� Bash ��ʼ�����롣
 if [ -n "${BASH_VERSION:-}" ] && [ "${__VPS_STARSHIP_INITIALIZED:-}" != "$$" ]; then
     case $- in
         *i*)
@@ -148,22 +148,22 @@ fi
 # <<< vps-init starship <<<
 STARSHIP_INIT_EOF
         if ! bash -n "$staged"; then
-            error "$file 的 Bash 语法校验失败，未修改原文件"
+            error "$file �� Bash �﷨У��ʧ�ܣ�δ�޸�ԭ�ļ�"
             return 1
         fi
     done
 
     mkdir -p "$account_home/.config"
     backup_id="$(date +%Y%m%d-%H%M%S).${work_dir##*.}"
-    # 全部准备并校验后再写入；有内容变化时才备份和替换。
+    # ȫ��׼����У�����д�룻�����ݱ仯ʱ�ű��ݺ��滻��
     for i in 0 1 2; do
         file=${targets[$i]}
         staged=${staged_files[$i]}
-        # 默认保留已有主题；只有明确要求重置时才应用内置单行样式。
+        # Ĭ�ϱ����������⣻ֻ����ȷҪ������ʱ��Ӧ�����õ�����ʽ��
         if [[ "$i" == 0 && "${RESET_STARSHIP_CONFIG:-0}" == 0 ]] && \
             [[ -e "$file" || -L "$file" ]]; then
             theme_preserved=true
-            info "已保留已有 Starship 配置: $file（RESET_STARSHIP_CONFIG=1 可重置）"
+            info "�ѱ������� Starship ����: $file��RESET_STARSHIP_CONFIG=1 �����ã�"
             continue
         fi
         if cmp -s "$staged" "$file"; then
@@ -171,22 +171,22 @@ STARSHIP_INIT_EOF
         fi
         if [[ -e "$file" ]]; then
             cp -pL -- "$file" "$file.bak.$backup_id"
-            info "已备份: $file.bak.$backup_id"
+            info "�ѱ���: $file.bak.$backup_id"
         fi
         cp -- "$staged" "$file"
     done
     if [[ "$theme_preserved" == true ]]; then
-        info "Starship Bash 自动加载已配置，继续使用已有主题"
+        info "Starship Bash �Զ����������ã�����ʹ����������"
     else
-        info "Starship 已配置：彩色单行提示符（> 与目录同一行），无额外空行"
+        info "Starship �����ã���ɫ������ʾ����> ��Ŀ¼ͬһ�У����޶������"
     fi
-    info "重新连接 SSH，或在当前 Bash 执行: source ~/.bashrc"
-    info "仅配置当前 root 账号；不会切换登录 Shell 或卸载 fish"
+    info "�������� SSH�����ڵ�ǰ Bash ִ��: source ~/.bashrc"
+    info "�����õ�ǰ root �˺ţ������л���¼ Shell ��ж�� fish"
 )
-# ---------- Starship 公共配置结束 ----------
+# ---------- Starship �������ý��� ----------
 
-# 始终从控制终端读取交互输入，避免 curl | bash 时误读脚本管道。
-# -e 启用 Readline，支持退格、Delete 和方向键编辑。
+# ʼ�մӿ����ն˶�ȡ�������룬���� curl | bash ʱ����ű��ܵ���
+# -e ���� Readline��֧���˸�Delete �ͷ�����༭��
 read_tty() {
     local target_var=$1
     local prompt=$2
@@ -200,10 +200,10 @@ read_tty() {
         fi
         exec {tty_fd}>&-
     else
-        warn "未检测到可交互终端，将使用默认值"
+        warn "δ��⵽�ɽ����նˣ���ʹ��Ĭ��ֵ"
     fi
 
-    # read 成功读到空行时也应用默认值；主机名等空默认值仍保持为空。
+    # read �ɹ���������ʱҲӦ��Ĭ��ֵ���������ȿ�Ĭ��ֵ�Ա���Ϊ�ա�
     printf -v "$target_var" '%s' "${reply:-$default_value}"
 }
 
@@ -234,14 +234,14 @@ is_valid_domain() {
 }
 
 
-# ---------- 系统概况与操作选择（不修改系统） ----------
+# ---------- ϵͳ�ſ������ѡ�񣨲��޸�ϵͳ�� ----------
 die() { error "$1" >&2; exit 1; }
 
-# 在子 Shell 中读取系统信息，避免 os-release 的变量影响后续部署。
-# 所有探测均为本机只读操作；精简系统缺少命令或 /proc 字段时显示“未知”。
+# ���� Shell �ж�ȡϵͳ��Ϣ������ os-release �ı���Ӱ���������
+# ����̽���Ϊ����ֻ������������ϵͳȱ������� /proc �ֶ�ʱ��ʾ��δ֪����
 print_system_overview() (
     local os_name kernel arch host cpu_count cpu_model memory swap disk uptime_text load virt init_state user_name
-    step 'Linux 系统概况'
+    step 'Linux ϵͳ�ſ�'
     kernel=$(uname -r 2>/dev/null || true)
     arch=$(uname -m 2>/dev/null || true)
     host=$(hostname 2>/dev/null || true)
@@ -259,40 +259,40 @@ print_system_overview() (
     fi
     if [[ -r /proc/meminfo ]]; then
         memory=$(awk '/^MemTotal:/ {total=$2} /^MemAvailable:/ {available=$2; found=1}
-            END {if (total>0) {printf "总计 %.0f MiB", total/1024; if (found) printf " / 可用 %.0f MiB", available/1024}}' /proc/meminfo 2>/dev/null || true)
+            END {if (total>0) {printf "�ܼ� %.0f MiB", total/1024; if (found) printf " / ���� %.0f MiB", available/1024}}' /proc/meminfo 2>/dev/null || true)
         swap=$(awk '/^SwapTotal:/ {total=$2; found=1} /^SwapFree:/ {free=$2}
-            END {if (found) {if (total==0) printf "未配置"; else printf "总计 %.0f MiB / 可用 %.0f MiB", total/1024, free/1024}}' /proc/meminfo 2>/dev/null || true)
+            END {if (found) {if (total==0) printf "δ����"; else printf "�ܼ� %.0f MiB / ���� %.0f MiB", total/1024, free/1024}}' /proc/meminfo 2>/dev/null || true)
     fi
-    disk=$(LC_ALL=C df -Pk / 2>/dev/null | awk 'NR==2 {printf "总计 %.1f GiB / 可用 %.1f GiB / 已用 %s", $2/1048576, $4/1048576, $5}' || true)
+    disk=$(LC_ALL=C df -Pk / 2>/dev/null | awk 'NR==2 {printf "�ܼ� %.1f GiB / ���� %.1f GiB / ���� %s", $2/1048576, $4/1048576, $5}' || true)
     if [[ -r /proc/uptime ]]; then
-        uptime_text=$(awk '{printf "%d 天 %d 小时 %d 分钟", $1/86400, ($1%86400)/3600, ($1%3600)/60}' /proc/uptime 2>/dev/null || true)
+        uptime_text=$(awk '{printf "%d �� %d Сʱ %d ����", $1/86400, ($1%86400)/3600, ($1%3600)/60}' /proc/uptime 2>/dev/null || true)
     fi
     if [[ -r /proc/loadavg ]]; then
-        load=$(awk '{printf "%s / %s / %s（1 / 5 / 15 分钟）", $1, $2, $3}' /proc/loadavg 2>/dev/null || true)
+        load=$(awk '{printf "%s / %s / %s��1 / 5 / 15 ���ӣ�", $1, $2, $3}' /proc/loadavg 2>/dev/null || true)
     fi
     virt=$(systemd-detect-virt 2>/dev/null || true)
-    [[ "$virt" != none ]] || virt='未检测到虚拟化'
-    init_state='未检测到运行中的 systemd'
-    [[ ! -d /run/systemd/system ]] || init_state='systemd 已运行'
+    [[ "$virt" != none ]] || virt='δ��⵽���⻯'
+    init_state='δ��⵽�����е� systemd'
+    [[ ! -d /run/systemd/system ]] || init_state='systemd ������'
     user_name=$(id -un 2>/dev/null || true)
-    printf '  主机名称：%s\n' "${host:-未知}"
-    printf '  操作系统：%s\n' "${os_name:-未知}"
-    printf '  内核架构：%s / %s\n' "${kernel:-未知}" "${arch:-未知}"
-    printf '  CPU：%s 逻辑核%s\n' "${cpu_count:-未知}" "${cpu_model:+ / $cpu_model}"
-    printf '  内存：%s\n  Swap：%s\n' "${memory:-未知}" "${swap:-未知}"
-    printf '  根分区：%s\n' "${disk:-未知}"
-    printf '  运行时长：%s\n  系统负载：%s\n' "${uptime_text:-未知}" "${load:-未知}"
-    printf '  虚拟化：%s\n  服务管理：%s\n' "${virt:-未知}" "$init_state"
-    printf '  当前用户：%s（UID=%s）\n' "${user_name:-未知}" "$EUID"
-    info '运行要求：Debian 11+ / Ubuntu 22.04+、root 权限、运行中的 systemd；正式执行前会校验。'
+    printf '  �������ƣ�%s\n' "${host:-δ֪}"
+    printf '  ����ϵͳ��%s\n' "${os_name:-δ֪}"
+    printf '  �ں˼ܹ���%s / %s\n' "${kernel:-δ֪}" "${arch:-δ֪}"
+    printf '  CPU��%s �߼���%s\n' "${cpu_count:-δ֪}" "${cpu_model:+ / $cpu_model}"
+    printf '  �ڴ棺%s\n  Swap��%s\n' "${memory:-δ֪}" "${swap:-δ֪}"
+    printf '  ��������%s\n' "${disk:-δ֪}"
+    printf '  ����ʱ����%s\n  ϵͳ���أ�%s\n' "${uptime_text:-δ֪}" "${load:-δ֪}"
+    printf '  ���⻯��%s\n  ���������%s\n' "${virt:-δ֪}" "$init_state"
+    printf '  ��ǰ�û���%s��UID=%s��\n' "${user_name:-δ֪}" "$EUID"
+    info '����Ҫ��Debian 11+ / Ubuntu 22.04+��root Ȩ�ޡ������е� systemd����ʽִ��ǰ��У�顣'
 )
 
 mode_label() {
     case "$1" in
-        full) printf '完整初始化' ;;
-        components) printf '安装 / 调整组件' ;;
-        status) printf '查看运行状态（只读）' ;;
-        update) printf '更新已有组件 / 服务' ;;
+        full) printf '������ʼ��' ;;
+        components) printf '��װ / �������' ;;
+        status) printf '�鿴����״̬��ֻ����' ;;
+        update) printf '����������� / ����' ;;
     esac
 }
 
@@ -300,54 +300,54 @@ require_choice() {
     local variable=$1 prompt=$2 fallback=${3-}
     if [[ -z "${!variable:-}" ]]; then
         read_tty "$variable" "$prompt" "$fallback"
-        [[ -n "${!variable}" ]] || die "缺少 $variable，请在交互终端选择或通过环境变量提供"
+        [[ -n "${!variable}" ]] || die "ȱ�� $variable�����ڽ����ն�ѡ���ͨ�����������ṩ"
     fi
 }
 
 select_mode() {
-    step '选择操作'
-    echo '  1) 完整初始化（默认）'
-    echo '     适合新机器：配置系统基础环境，再安装所选工具或服务。'
-    echo '  2) 安装 / 调整组件'
-    echo '     适合已有机器：补装工具、部署服务组，或调整后台任务。'
-    echo '     不做全系统升级，不改主机名、TCP 参数及系统安全策略。'
-    echo '  3) 查看运行状态（只读）'
-    echo '     检查所选范围的现有服务，不安装或修改配置。'
-    echo '  4) 更新已有组件 / 服务'
-    echo '     更新已安装工具或拉取服务镜像；沿用已有配置。'
-    echo '  0) 退出脚本'
-    require_choice VPS_MODE '请选择操作 [0-4，回车=1]: ' 1
+    step 'ѡ�����'
+    echo '  1) ������ʼ����Ĭ�ϣ�'
+    echo '     �ʺ��»���������ϵͳ�����������ٰ�װ��ѡ���߻����'
+    echo '  2) ��װ / �������'
+    echo '     �ʺ����л�������װ���ߡ���������飬�������̨����'
+    echo '     ����ȫϵͳ������������������TCP ������ϵͳ��ȫ���ԡ�'
+    echo '  3) �鿴����״̬��ֻ����'
+    echo '     �����ѡ��Χ�����з��񣬲���װ���޸����á�'
+    echo '  4) ����������� / ����'
+    echo '     �����Ѱ�װ���߻���ȡ�����������������á�'
+    echo '  0) �˳��ű�'
+    require_choice VPS_MODE '��ѡ����� [0-4���س�=1]: ' 1
     case "$VPS_MODE" in
         0) exit 0 ;;
         1|full) VPS_MODE=full ;;
         2|components) VPS_MODE=components ;;
         3|status) VPS_MODE=status ;;
         4|update) VPS_MODE=update ;;
-        *) die '模式无效：请输入 0-4 或 full/components/status/update' ;;
+        *) die 'ģʽ��Ч�������� 0-4 �� full/components/status/update' ;;
     esac
-    info "已选择：$(mode_label "$VPS_MODE")"
+    info "��ѡ��$(mode_label "$VPS_MODE")"
 }
 
-# 安装模式默认启用适用的后台任务；已有任务才展示“保持现状”。
-# ACTION=0 仍接受显式环境变量，兼容旧自动化；检查/更新模式始终不调整后台任务。
+# ��װģʽĬ���������õĺ�̨�������������չʾ��������״����
+# ACTION=0 �Խ�����ʽ�������������ݾ��Զ��������/����ģʽʼ�ղ�������̨����
 
 select_background_actions() {
     if [[ "$VPS_MODE" == full || "$VPS_MODE" == components ]]; then
-        step '设置后台任务'
-        echo '  以下任务独立选择；启用后会持续运行或按计划执行。'
+        step '���ú�̨����'
+        echo '  �����������ѡ�����ú��������л򰴼ƻ�ִ�С�'
         if [[ "$VPS_SCENE" == domestic ]]; then
-            echo '  Watchtower：定时更新本脚本管理的容器；Memos 不参与自动更新。'
-            choose_background_action WATCHTOWER_ACTION 'Watchtower 自动更新'
+            echo '  Watchtower����ʱ���±��ű�������������Memos �������Զ����¡�'
+            choose_background_action WATCHTOWER_ACTION 'Watchtower �Զ�����'
         else
-            printf '  iperf3：启动网络测速服务，端口 %s；客户端命令：iperf3 -c 服务器地址 -p %s。\n' "${IPERF3_PORT:-5201}" "${IPERF3_PORT:-5201}"
-            echo '  此服务无身份认证，请仅向可信 IP 放行端口。'
-            choose_background_action IPERF3_ACTION 'iperf3 常驻服务'
+            printf '  iperf3������������ٷ��񣬶˿� %s���ͻ������iperf3 -c ��������ַ -p %s��\n' "${IPERF3_PORT:-5201}" "${IPERF3_PORT:-5201}"
+            echo '  �˷�����������֤���������� IP ���ж˿ڡ�'
+            choose_background_action IPERF3_ACTION 'iperf3 ��פ����'
             if sb_update_supported; then
-                echo '  sing-box：每天 04:00（服务器时区）更新管理脚本与内核。'
-                choose_background_action SB_UPDATE_ACTION 'sing-box 定时更新'
+                echo '  sing-box��ÿ�� 04:00��������ʱ�������¹����ű����ںˡ�'
+                choose_background_action SB_UPDATE_ACTION 'sing-box ��ʱ����'
             else
-                [[ "${SB_UPDATE_ACTION:-0}" != 1 ]] || die '启用定时更新需要已有 sb 管理脚本，或本次选择新装 sing-box'
-                info '本次未选择新装 sing-box，或已有内核缺少 sb 管理入口，跳过定时更新选择'
+                [[ "${SB_UPDATE_ACTION:-0}" != 1 ]] || die '���ö�ʱ������Ҫ���� sb �����ű����򱾴�ѡ����װ sing-box'
+                info '����δѡ����װ sing-box���������ں�ȱ�� sb ������ڣ�������ʱ����ѡ��'
             fi
         fi
     fi
@@ -359,14 +359,14 @@ select_background_actions() {
 sb_update_supported() {
     [[ ! -f /usr/local/bin/sb ]] || return 0
     [[ "${INSTALL_SING_BOX:-0}" == 1 ]] || return 1
-    # 原生内核已安装且运行、但没有 233boy 管理入口时，不配置不适用的 sb 定时任务。
+    # ԭ���ں��Ѱ�װ�����С���û�� 233boy �������ʱ�������ò����õ� sb ��ʱ����
     if probe_singbox_installation; then return 1; fi
     return 0
 }
 
 probe_background_state() {
     BACKGROUND_PRESENT=0
-    BACKGROUND_STATE='未配置'
+    BACKGROUND_STATE='δ����'
     local current enabled cron_content
     case "$1" in
         IPERF3_ACTION)
@@ -374,22 +374,22 @@ probe_background_state() {
                 BACKGROUND_PRESENT=1
                 current=$(systemctl is-active iperf3-server.service 2>/dev/null || true)
                 enabled=$(systemctl is-enabled iperf3-server.service 2>/dev/null || true)
-                if [[ "$current" == active ]]; then BACKGROUND_STATE='运行中'; else BACKGROUND_STATE='未运行'; fi
-                if [[ "$enabled" == enabled ]]; then BACKGROUND_STATE+='，已设置开机启动'; else BACKGROUND_STATE+='，未设置开机启动'; fi
+                if [[ "$current" == active ]]; then BACKGROUND_STATE='������'; else BACKGROUND_STATE='δ����'; fi
+                if [[ "$enabled" == enabled ]]; then BACKGROUND_STATE+='�������ÿ�������'; else BACKGROUND_STATE+='��δ���ÿ�������'; fi
             fi
             ;;
         SB_UPDATE_ACTION)
             cron_content=''
             if command -v crontab >/dev/null 2>&1; then
-                if ! read_root_crontab; then BACKGROUND_PRESENT=1; BACKGROUND_STATE='无法读取 crontab，任务状态未知'; return 0; fi
+                if ! read_root_crontab; then BACKGROUND_PRESENT=1; BACKGROUND_STATE='�޷���ȡ crontab������״̬δ֪'; return 0; fi
                 cron_content=$ROOT_CRONTAB_CONTENT
             fi
             if [[ -n "$(filter_sb_update_cron 1 <<< "$cron_content")" ]]; then
                 BACKGROUND_PRESENT=1
-                BACKGROUND_STATE='已配置定时更新'
+                BACKGROUND_STATE='�����ö�ʱ����'
             elif [[ -f /usr/local/bin/sb-auto-update.sh ]]; then
                 BACKGROUND_PRESENT=1
-                BACKGROUND_STATE='更新脚本已存在，未配置定时任务'
+                BACKGROUND_STATE='���½ű��Ѵ��ڣ�δ���ö�ʱ����'
             fi
             ;;
         WATCHTOWER_ACTION)
@@ -397,9 +397,9 @@ probe_background_state() {
                 if current=$(docker inspect --format '{{.State.Status}}' watchtower 2>/dev/null); then
                     BACKGROUND_PRESENT=1
                     case "$current" in
-                        running) BACKGROUND_STATE='运行中' ;;
-                        restarting) BACKGROUND_STATE='正在重启' ;;
-                        *) BACKGROUND_STATE='已配置，未运行' ;;
+                        running) BACKGROUND_STATE='������' ;;
+                        restarting) BACKGROUND_STATE='��������' ;;
+                        *) BACKGROUND_STATE='�����ã�δ����' ;;
                     esac
                 fi
             fi
@@ -411,57 +411,57 @@ choose_background_action() {
     local variable=$1 label=$2
     probe_background_state "$variable"
     show_background_menu "$label" "$BACKGROUND_PRESENT" "$BACKGROUND_STATE"
-    require_choice "$variable" '请选择后台任务操作（回车=1）: ' 1
+    require_choice "$variable" '��ѡ���̨����������س�=1��: ' 1
 }
 
 show_background_menu() {
-    printf '\n%s：\n' "$1"
-    printf '  当前状态：%s\n' "${3:-未配置}"
-    echo '  1) 启用（默认）'
+    printf '\n%s��\n' "$1"
+    printf '  ��ǰ״̬��%s\n' "${3:-δ����}"
+    echo '  1) ���ã�Ĭ�ϣ�'
     if [[ "${2:-0}" == 1 ]]; then
-        echo '  2) 停用已有任务'
-        echo '  0) 保持现状'
+        echo '  2) ͣ����������'
+        echo '  0) ������״'
     else
-        echo '  2) 不启用（跳过此任务）'
+        echo '  2) �����ã�����������'
     fi
 }
 
 background_action_label() {
     case "$1" in
-        0) printf '保持现状' ;;
-        1) printf '启用' ;;
-        2) printf '不启用（已有任务将停用）' ;;
+        0) printf '������״' ;;
+        1) printf '����' ;;
+        2) printf '�����ã���������ͣ�ã�' ;;
     esac
 }
 
 select_scene() {
-    step '选择服务器用途 / 线路'
-    echo '  网络工具与线路配置：'
-    echo '  1) HK / JP 精品线路 — 低延迟线路，NextTrace / sing-box 另选'
-    echo '  2) LA 等跨洲线路 — 高延迟、长距离大带宽，工具另选'
-    echo '  3) DE / 法兰克福 — 保留 DE 专用 TCP 方案，工具另选'
-    echo '  4) 精简基础环境 — 低延迟 TCP 方案，不安装 NextTrace / sing-box'
+    step 'ѡ���������; / ��·'
+    echo '  ���繤������·���ã�'
+    echo '  1) HK / JP ��Ʒ��· �� ���ӳ���·��NextTrace / sing-box ��ѡ'
+    echo '  2) LA �ȿ�����· �� ���ӳ١�������������������ѡ'
+    echo '  3) DE / �����˸� �� ���� DE ר�� TCP ������������ѡ'
+    echo '  4) ����������� �� ���ӳ� TCP ����������װ NextTrace / sing-box'
     echo ''
-    echo '  自托管应用：'
-    echo '  5) Docker 服务 — NPM 反向代理 + 按需选择的应用（原国内场景）'
-    echo '     国内外 VPS 均可选择；是否需要镜像代理取决于服务器网络。'
-    echo '  0) 退出脚本'
+    echo '  ���й�Ӧ�ã�'
+    echo '  5) Docker ���� �� NPM ������� + ����ѡ���Ӧ�ã�ԭ���ڳ�����'
+    echo '     ������ VPS ����ѡ���Ƿ���Ҫ�������ȡ���ڷ��������硣'
+    echo '  0) �˳��ű�'
     if [[ "${VPS_MODE:-full}" == full ]]; then
-        echo '  提示：选项 1-4 会配置对应 TCP 参数和 fail2ban；选项 5 部署 Docker 服务。'
+        echo '  ��ʾ��ѡ�� 1-4 �����ö�Ӧ TCP ������ fail2ban��ѡ�� 5 ���� Docker ����'
     else
-        echo '  提示：此处只确定操作范围；当前操作不会重新配置 TCP 参数和系统基础环境。'
+        echo '  ��ʾ���˴�ֻȷ��������Χ����ǰ���������������� TCP ������ϵͳ����������'
     fi
-    require_choice VPS_SCENE '请选择用途 / 线路 [0-5，无默认值]: '
+    require_choice VPS_SCENE '��ѡ����; / ��· [0-5����Ĭ��ֵ]: '
     case "$VPS_SCENE" in
         0) exit 0 ;;
-        1|hk|jp) VPS_SCENE=hk; SCENE_NAME='HK / JP 精品线路' ;;
-        2|la) VPS_SCENE=la; SCENE_NAME='LA 高延迟线路' ;;
-        3|de) VPS_SCENE=de; SCENE_NAME='DE / 法兰克福线路' ;;
-        4|minimal) VPS_SCENE=minimal; SCENE_NAME='精简基础版' ;;
-        5|domestic) VPS_SCENE=domestic; SCENE_NAME='Docker 自托管服务' ;;
-        *) die '场景无效：请输入 0-5 或 hk/la/de/minimal/domestic' ;;
+        1|hk|jp) VPS_SCENE=hk; SCENE_NAME='HK / JP ��Ʒ��·' ;;
+        2|la) VPS_SCENE=la; SCENE_NAME='LA ���ӳ���·' ;;
+        3|de) VPS_SCENE=de; SCENE_NAME='DE / �����˸���·' ;;
+        4|minimal) VPS_SCENE=minimal; SCENE_NAME='���������' ;;
+        5|domestic) VPS_SCENE=domestic; SCENE_NAME='Docker ���йܷ���' ;;
+        *) die '������Ч�������� 0-5 �� hk/la/de/minimal/domestic' ;;
     esac
-    info "已选择：$SCENE_NAME"
+    info "��ѡ��$SCENE_NAME"
 }
 
 select_components() {
@@ -470,22 +470,22 @@ select_components() {
         return 0
     fi
     if [[ "$VPS_SCENE" == minimal || "$VPS_SCENE" == domestic ]]; then
-        [[ "${VPS_COMPONENTS:-0}" == 0 ]] || die '精简版和国内版不支持 VPS_COMPONENTS；境外工具请选择场景 1-3'
+        [[ "${VPS_COMPONENTS:-0}" == 0 ]] || die '�����͹��ڰ治֧�� VPS_COMPONENTS�����⹤����ѡ�񳡾� 1-3'
         VPS_COMPONENTS=0
     else
         if [[ "${VPS_MODE:-full}" == update ]]; then
-            step '选择要更新的工具'
-            echo '  只更新已安装工具；尚未安装时请改用“安装 / 调整组件”。'
+            step 'ѡ��Ҫ���µĹ���'
+            echo '  ֻ�����Ѱ�װ���ߣ���δ��װʱ����á���װ / �����������'
         else
-            step '选择要安装的工具'
+            step 'ѡ��Ҫ��װ�Ĺ���'
         fi
-        echo '  NextTrace：查看网络路由与链路；sing-box：代理服务及管理工具。'
-        echo '  1) NextTrace + sing-box（默认）'
-        echo '  2) 仅 NextTrace'
-        echo '  3) 仅 sing-box'
-        echo '  0) 不选择'
-        require_choice VPS_COMPONENTS '请选择工具 [0-3，回车=1]: ' 1
-        case "$VPS_COMPONENTS" in 0|1|2|3) ;; *) die '组件序号必须为 0-3' ;; esac
+        echo '  NextTrace���鿴����·������·��sing-box���������񼰹������ߡ�'
+        echo '  1) NextTrace + sing-box��Ĭ�ϣ�'
+        echo '  2) �� NextTrace'
+        echo '  3) �� sing-box'
+        echo '  0) ��ѡ��'
+        require_choice VPS_COMPONENTS '��ѡ�񹤾� [0-3���س�=1]: ' 1
+        case "$VPS_COMPONENTS" in 0|1|2|3) ;; *) die '�����ű���Ϊ 0-3' ;; esac
     fi
     INSTALL_NEXTTRACE=0
     INSTALL_SING_BOX=0
@@ -503,32 +503,32 @@ select_services() {
     SELECTED_PROFILE_NAMES=()
     local profile selection item
     local -a requested=()
-    step "选择服务组 · $(mode_label "${VPS_MODE:-full}")"
-    echo '  基础服务：NPM（Nginx Proxy Manager，反向代理与证书管理），始终包含。'
+    step "ѡ������� �� $(mode_label "${VPS_MODE:-full}")"
+    echo '  ��������NPM��Nginx Proxy Manager�����������֤���������ʼ�հ�����'
     if [[ "${VPS_MODE:-full}" == status ]]; then
-        echo '  请选择要检查的服务组；缺少容器或服务未启动时会报告异常。'
+        echo '  ��ѡ��Ҫ���ķ����飻ȱ�����������δ����ʱ�ᱨ���쳣��'
     elif [[ "${VPS_MODE:-full}" == update ]]; then
-        echo '  复用已有 Compose 定义；所选服务尚无容器时，会按已有配置创建并启动。'
+        echo '  �������� Compose ���壻��ѡ������������ʱ���ᰴ�������ô�����������'
     else
-        echo '  Watchtower 自动更新稍后单独选择；选择服务组会生成 / 更新 Compose 配置。'
+        echo '  Watchtower �Զ������Ժ󵥶�ѡ��ѡ������������ / ���� Compose ���á�'
     fi
-    echo '  1) 导航与工具 — Homepage + IT-Tools'
-    echo '  2) 代码托管 — Gitea'
-    echo '  3) 音乐与下载 — Navidrome + MeTube'
-    echo '  4) RSS 订阅 — RSSHub + Browserless + Redis'
-    echo '  5) 文件管理 — File Browser + OpenList'
-    echo '  6) 服务监控 — Uptime Kuma + Beszel'
-    echo '  7) 笔记备忘 — Memos'
-    echo '  8) 全部可选服务组'
-    echo '  0) 仅基础服务 NPM（默认）'
-    echo '  可多选，例如 1,4,6；0 和 8 需单独使用。未选中的已有服务不会被卸载。'
-    require_choice SERVICE_PROFILES '请选择服务组 [回车=0]: ' 0
+    echo '  1) �����빤�� �� Homepage + IT-Tools'
+    echo '  2) �����й� �� Gitea'
+    echo '  3) ���������� �� Navidrome + MeTube'
+    echo '  4) RSS ���� �� RSSHub + Browserless + Redis'
+    echo '  5) �ļ����� �� File Browser + OpenList'
+    echo '  6) ������ �� Uptime Kuma + Beszel'
+    echo '  7) �ʼǱ��� �� Memos'
+    echo '  8) ȫ����ѡ������'
+    echo '  0) ���������� NPM��Ĭ�ϣ�'
+    echo '  �ɶ�ѡ������ 1,4,6��0 �� 8 �赥��ʹ�á�δѡ�е����з��񲻻ᱻж�ء�'
+    require_choice SERVICE_PROFILES '��ѡ������� [�س�=0]: ' 0
     selection=${SERVICE_PROFILES//[[:space:]]/}
     case "$selection" in
         8|all) requested=("${AVAILABLE_PROFILES[@]}") ;;
         0|none) requested=() ;;
         *)
-            [[ "$selection" != ,* && "$selection" != *, && "$selection" != *,,* ]] || die '服务选择不能包含空项'
+            [[ "$selection" != ,* && "$selection" != *, && "$selection" != *,,* ]] || die '����ѡ���ܰ�������'
             IFS=',' read -r -a requested <<< "$selection"
             ;;
     esac
@@ -537,7 +537,7 @@ select_services() {
             1|tools) profile=tools ;; 2|code) profile=code ;;
             3|media) profile=media ;; 4|rss) profile=rss ;;
             5|files) profile=files ;; 6|monitoring) profile=monitoring ;;
-            7|notes) profile=notes ;; *) die "未知服务选项: $item" ;;
+            7|notes) profile=notes ;; *) die "δ֪����ѡ��: $item" ;;
         esac
         ENABLED_PROFILES["$profile"]=1
     done
@@ -562,43 +562,43 @@ build_compose_profile_args() {
 
 profile_label() {
     case "$1" in
-        tools) printf '导航与工具（Homepage、IT-Tools）' ;;
-        code) printf '代码托管（Gitea）' ;;
-        media) printf '音乐与下载（Navidrome、MeTube）' ;;
-        rss) printf 'RSS 订阅（RSSHub、Browserless、Redis）' ;;
-        files) printf '文件管理（File Browser、OpenList）' ;;
-        monitoring) printf '服务监控（Uptime Kuma、Beszel）' ;;
-        notes) printf '笔记备忘（Memos）' ;;
+        tools) printf '�����빤�ߣ�Homepage��IT-Tools��' ;;
+        code) printf '�����йܣ�Gitea��' ;;
+        media) printf '���������أ�Navidrome��MeTube��' ;;
+        rss) printf 'RSS ���ģ�RSSHub��Browserless��Redis��' ;;
+        files) printf '�ļ�������File Browser��OpenList��' ;;
+        monitoring) printf '�����أ�Uptime Kuma��Beszel��' ;;
+        notes) printf '�ʼǱ�����Memos��' ;;
     esac
 }
 
 validate_options() {
     local variable
     for variable in UPGRADE_SYSTEM INSTALL_STARSHIP RESET_STARSHIP_CONFIG; do
-        case "${!variable:-0}" in 0|1) ;; *) die "$variable 仅支持 0 或 1" ;; esac
+        case "${!variable:-0}" in 0|1) ;; *) die "$variable ��֧�� 0 �� 1" ;; esac
     done
     for variable in IPERF3_ACTION WATCHTOWER_ACTION SB_UPDATE_ACTION; do
-        case "${!variable:-0}" in 0|1|2) ;; *) die "$variable 仅支持 0/1/2（保持/启用/停用）" ;; esac
+        case "${!variable:-0}" in 0|1|2) ;; *) die "$variable ��֧�� 0/1/2������/����/ͣ�ã�" ;; esac
         if [[ "${VPS_MODE:-full}" == status || "${VPS_MODE:-full}" == update ]]; then
-            [[ "${!variable:-0}" == 0 ]] || die '检查/更新模式不调整后台策略，请将 ACTION 设为 0，启停请使用组件模式'
+            [[ "${!variable:-0}" == 0 ]] || die '���/����ģʽ��������̨���ԣ��뽫 ACTION ��Ϊ 0����ͣ��ʹ�����ģʽ'
         fi
     done
     SERVICE_WAIT_TIMEOUT=${SERVICE_WAIT_TIMEOUT:-300}
-    if [[ ! "$SERVICE_WAIT_TIMEOUT" =~ ^[1-9][0-9]{0,3}$ ]] || (( SERVICE_WAIT_TIMEOUT > 3600 )); then die 'SERVICE_WAIT_TIMEOUT 必须为 1-3600 秒'; fi
+    if [[ ! "$SERVICE_WAIT_TIMEOUT" =~ ^[1-9][0-9]{0,3}$ ]] || (( SERVICE_WAIT_TIMEOUT > 3600 )); then die 'SERVICE_WAIT_TIMEOUT ����Ϊ 1-3600 ��'; fi
     if [[ "$VPS_SCENE" != domestic ]]; then
         IPERF3_PORT=${IPERF3_PORT:-5201}
-        if [[ ! "$IPERF3_PORT" =~ ^[1-9][0-9]{3,4}$ ]] || (( IPERF3_PORT < 1024 || IPERF3_PORT > 65535 )); then die 'IPERF3_PORT 必须是 1024-65535 的整数'; fi
+        if [[ ! "$IPERF3_PORT" =~ ^[1-9][0-9]{3,4}$ ]] || (( IPERF3_PORT < 1024 || IPERF3_PORT > 65535 )); then die 'IPERF3_PORT ������ 1024-65535 ������'; fi
     fi
-    STACK_DIR=${STACK_DIR:-/opt/stacks}
-    [[ "$STACK_DIR" == /* && "$STACK_DIR" != / && "$STACK_DIR" != *$'\n'* ]] || die 'STACK_DIR 必须为非根目录的绝对路径'
-    # 默认使用原始镜像源；由部署者提供可信的镜像站 JSON 数组。
+    STACK_DIR=${STACK_DIR:-/root}
+    [[ "$STACK_DIR" == /* && "$STACK_DIR" != / && "$STACK_DIR" != *$'\n'* ]] || die 'STACK_DIR ����Ϊ�Ǹ�Ŀ¼�ľ���·��'
+    # Ĭ��ʹ��ԭʼ����Դ���ɲ������ṩ���ŵľ���վ JSON ���顣
     DOCKER_MIRRORS=${DOCKER_MIRRORS:-[]}
     if [[ -z "${MEMOS_IMAGE:-}" && -f "$STACK_DIR/docker-compose.yml" ]]; then
         MEMOS_IMAGE=$(awk '/^  memos:/ {inside=1; next} inside && /^    image:/ {print $2; exit}' "$STACK_DIR/docker-compose.yml")
         if [[ "$MEMOS_IMAGE" == neosmemo/memos:latest ]]; then
             if [[ -d "$STACK_DIR/memos/data" ]] && find "$STACK_DIR/memos/data" -type f -print -quit | grep -q .; then
                 if [[ "${VPS_MODE:-full}" != status && "${VPS_MODE:-full}" != update && -n "${ENABLED_PROFILES[notes]+x}" ]]; then
-                    die '已有旧版 Memos 数据；请先备份并核对升级路径，再显式设置 MEMOS_IMAGE（早于 0.22 需先运行 0.25.3，再升级 0.31.0）'
+                    die '���оɰ� Memos ���ݣ����ȱ��ݲ��˶�����·��������ʽ���� MEMOS_IMAGE������ 0.22 �������� 0.25.3�������� 0.31.0��'
                 fi
             else
                 MEMOS_IMAGE=neosmemo/memos:0.31.0
@@ -606,94 +606,94 @@ validate_options() {
         fi
     fi
     MEMOS_IMAGE=${MEMOS_IMAGE:-neosmemo/memos:0.31.0}
-    [[ "$MEMOS_IMAGE" =~ ^[a-zA-Z0-9][a-zA-Z0-9./:@_-]+$ ]] || die 'MEMOS_IMAGE 必须为有效镜像引用，不含空白或 Shell 字符'
+    [[ "$MEMOS_IMAGE" =~ ^[a-zA-Z0-9][a-zA-Z0-9./:@_-]+$ ]] || die 'MEMOS_IMAGE ����Ϊ��Ч�������ã������հ׻� Shell �ַ�'
 }
 
 print_plan() {
     local profile tools=''
-    step '本次执行方案'
-    info "操作：$(mode_label "${VPS_MODE:-full}")"
-    info "用途 / 线路：$SCENE_NAME"
+    step '����ִ�з���'
+    info "������$(mode_label "${VPS_MODE:-full}")"
+    info "��; / ��·��$SCENE_NAME"
     if [[ "${VPS_MODE:-full}" == full ]]; then
-        info '系统配置：主机名（可跳过）、APT 索引更新、基础工具、自动安全更新、日志限制 100M'
-        if [[ "${UPGRADE_SYSTEM:-1}" == 1 ]]; then info '系统软件包：执行升级'; else info '系统软件包：跳过升级'; fi
-        if [[ "${INSTALL_STARSHIP:-1}" == 1 ]]; then info '终端提示符：配置 Starship'; else info '终端提示符：跳过 Starship'; fi
+        info 'ϵͳ���ã�������������������APT �������¡��������ߡ��Զ���ȫ���¡���־���� 100M'
+        if [[ "${UPGRADE_SYSTEM:-1}" == 1 ]]; then info 'ϵͳ��������ִ������'; else info 'ϵͳ����������������'; fi
+        if [[ "${INSTALL_STARSHIP:-1}" == 1 ]]; then info '�ն���ʾ�������� Starship'; else info '�ն���ʾ�������� Starship'; fi
     elif [[ "$VPS_MODE" == components ]]; then
-        info '仅安装所选组件及依赖，不升级系统，不修改主机名、安全策略或 TCP 参数'
+        info '����װ��ѡ�����������������ϵͳ�����޸�����������ȫ���Ի� TCP ����'
     elif [[ "$VPS_MODE" == status ]]; then
-        info '只读检查，不安装软件、不修改配置或后台任务'
+        info 'ֻ����飬����װ���������޸����û��̨����'
     elif [[ "$VPS_MODE" == update ]]; then
-        info '复用已有配置，仅更新所选的已部署组件 / 服务，不重新初始化系统'
+        info '�����������ã���������ѡ���Ѳ������ / ���񣬲����³�ʼ��ϵͳ'
     fi
     if [[ "$VPS_SCENE" == domestic ]]; then
         case "${VPS_MODE:-full}" in
-            full|components) info '服务操作：检查 / 安装 Docker 与 Compose，生成配置并启动所选服务' ;;
-            status) info '服务操作：读取已有 Compose，检查所选容器运行 / 健康状态' ;;
-            update) info '服务操作：读取已有 Compose，拉取所选镜像并重新启动服务' ;;
+            full|components) info '������������ / ��װ Docker �� Compose���������ò�������ѡ����' ;;
+            status) info '�����������ȡ���� Compose�������ѡ�������� / ����״̬' ;;
+            update) info '�����������ȡ���� Compose����ȡ��ѡ����������������' ;;
         esac
-        info '服务范围：NPM（反向代理与证书管理）'
+        info '����Χ��NPM�����������֤�������'
         for profile in "${SELECTED_PROFILE_NAMES[@]}"; do
             printf '  + %s\n' "$(profile_label "$profile")"
         done
-        info "Watchtower 自动更新：$(background_action_label "$WATCHTOWER_ACTION")"
-        info "服务目录：$STACK_DIR"
+        info "Watchtower �Զ����£�$(background_action_label "$WATCHTOWER_ACTION")"
+        info "����Ŀ¼��$STACK_DIR"
     else
-        if [[ "${VPS_MODE:-full}" == full ]]; then info "线路配置：应用 $SCENE_NAME 的 TCP 参数，配置 fail2ban"; fi
+        if [[ "${VPS_MODE:-full}" == full ]]; then info "��·���ã�Ӧ�� $SCENE_NAME �� TCP ���������� fail2ban"; fi
         [[ "$INSTALL_NEXTTRACE" != 1 ]] || tools='NextTrace'
-        [[ "$INSTALL_SING_BOX" != 1 ]] || tools="${tools:+$tools、}sing-box"
+        [[ "$INSTALL_SING_BOX" != 1 ]] || tools="${tools:+$tools��}sing-box"
         case "${VPS_MODE:-full}" in
-            full|components) info "安装工具：${tools:-无}" ;;
-            update) info "更新工具：${tools:-无}" ;;
-            status) info '检查范围：fail2ban、iperf3、cron、TCP 拥塞控制、sing-box 定时任务' ;;
+            full|components) info "��װ���ߣ�${tools:-��}" ;;
+            update) info "���¹��ߣ�${tools:-��}" ;;
+            status) info '��鷶Χ��fail2ban��iperf3��cron��TCP ӵ�����ơ�sing-box ��ʱ����' ;;
         esac
         if [[ "${VPS_MODE:-full}" == full || "$VPS_MODE" == components ]]; then
-            info "iperf3 测速服务：$(background_action_label "$IPERF3_ACTION")（端口 $IPERF3_PORT）"
-            info "sing-box 每日更新：$(background_action_label "$SB_UPDATE_ACTION")"
+            info "iperf3 ���ٷ���$(background_action_label "$IPERF3_ACTION")���˿� $IPERF3_PORT��"
+            info "sing-box ÿ�ո��£�$(background_action_label "$SB_UPDATE_ACTION")"
         fi
     fi
     if [[ "${VPS_MODE:-full}" == full || "$VPS_MODE" == components ]]; then
-        info '未选择的组件不会卸载；后台任务选择“停用”会停止对应的已有任务。'
+        info 'δѡ����������ж�أ���̨����ѡ��ͣ�á���ֹͣ��Ӧ����������'
     fi
 }
 
 preflight() {
-    [[ $EUID -eq 0 ]] || die '请以 root 用户运行此脚本'
-    [[ -r /etc/os-release ]] || die '无法读取 /etc/os-release'
+    [[ $EUID -eq 0 ]] || die '���� root �û����д˽ű�'
+    [[ -r /etc/os-release ]] || die '�޷���ȡ /etc/os-release'
     # shellcheck disable=SC1091
     source /etc/os-release
     case "${ID:-}:${VERSION_ID:-}" in
-        debian:*) dpkg --compare-versions "$VERSION_ID" ge 11 || die '需要 Debian 11+' ;;
-        ubuntu:*) dpkg --compare-versions "$VERSION_ID" ge 22.04 || die '需要 Ubuntu 22.04+' ;;
-        *) die '此脚本仅支持 Debian 11+ / Ubuntu 22.04+' ;;
+        debian:*) dpkg --compare-versions "$VERSION_ID" ge 11 || die '��Ҫ Debian 11+' ;;
+        ubuntu:*) dpkg --compare-versions "$VERSION_ID" ge 22.04 || die '��Ҫ Ubuntu 22.04+' ;;
+        *) die '�˽ű���֧�� Debian 11+ / Ubuntu 22.04+' ;;
     esac
-    [[ -n "${VERSION_CODENAME:-}" ]] || die '缺少系统版本代号 VERSION_CODENAME'
-    [[ -d /run/systemd/system ]] || die '需要运行中的 systemd；受限容器仅兼容 TCP 参数跳过，仍须支持 systemd 服务'
+    [[ -n "${VERSION_CODENAME:-}" ]] || die 'ȱ��ϵͳ�汾���� VERSION_CODENAME'
+    [[ -d /run/systemd/system ]] || die '��Ҫ�����е� systemd���������������� TCP ��������������֧�� systemd ����'
 }
 
 collect_hostname() {
     NEW_HOSTNAME=${VPS_HOSTNAME:-}
     if [[ -z "$NEW_HOSTNAME" ]]; then
-        read_tty NEW_HOSTNAME '请输入新主机名（直接回车跳过）: ' ''
+        read_tty NEW_HOSTNAME '����������������ֱ�ӻس�������: ' ''
     fi
-    [[ -z "$NEW_HOSTNAME" ]] || valid_hostname "$NEW_HOSTNAME" || die '主机名格式无效'
+    [[ -z "$NEW_HOSTNAME" ]] || valid_hostname "$NEW_HOSTNAME" || die '��������ʽ��Ч'
 }
 
 collect_homepage() {
     HOMEPAGE_HOST=${HOMEPAGE_HOST:-}
-    # 兼容本脚本此前生成的 Compose；追加其他服务组也必须保留已有域名。
-    if [[ -z "$HOMEPAGE_HOST" && -f "${STACK_DIR:-/opt/stacks}/docker-compose.yml" ]]; then
+    # ���ݱ��ű���ǰ���ɵ� Compose��׷������������Ҳ���뱣������������
+    if [[ -z "$HOMEPAGE_HOST" && -f "${STACK_DIR:-/root}/docker-compose.yml" ]]; then
         HOMEPAGE_HOST=$(awk '/^[[:space:]]*- HOMEPAGE_ALLOWED_HOSTS=/ {
             sub(/^[[:space:]]*- HOMEPAGE_ALLOWED_HOSTS=/, ""); print; exit
-        }' "${STACK_DIR:-/opt/stacks}/docker-compose.yml")
+        }' "${STACK_DIR:-/root}/docker-compose.yml")
     fi
     if [[ -n "${ENABLED_PROFILES[tools]+x}" ]]; then
-        require_choice HOMEPAGE_HOST '请输入 Homepage 域名（如 nav.example.com）: '
-        is_valid_domain "$HOMEPAGE_HOST" || die 'Homepage 仅允许有效 DNS 域名，不含协议、端口、路径或通配符'
+        require_choice HOMEPAGE_HOST '������ Homepage �������� nav.example.com��: '
+        is_valid_domain "$HOMEPAGE_HOST" || die 'Homepage ��������Ч DNS ����������Э�顢�˿ڡ�·����ͨ���'
     else
-        # 未启用 tools 时不要求私人域名；将来启用前应重新运行并指定域名。
+        # δ���� tools ʱ��Ҫ��˽����������������ǰӦ�������в�ָ��������
         HOMEPAGE_HOST=${HOMEPAGE_HOST:-nav.example.com}
     fi
-    is_valid_domain "$HOMEPAGE_HOST" || die '已有 Homepage 域名无法识别，请通过 HOMEPAGE_HOST 指定有效域名'
+    is_valid_domain "$HOMEPAGE_HOST" || die '���� Homepage �����޷�ʶ����ͨ�� HOMEPAGE_HOST ָ����Ч����'
 }
 
 backup_file() {
@@ -704,7 +704,7 @@ backup_file() {
     fi
 }
 
-# 多文件事务：只有内容改变才备份和写入；校验或启动失败时恢复文件及服务原状态。
+# ���ļ�����ֻ�����ݸı�ű��ݺ�д�룻У�������ʧ��ʱ�ָ��ļ�������ԭ״̬��
 apply_service_files() {
     local service=$1 validator=$2 enable_service=$3
     shift 3
@@ -712,7 +712,7 @@ apply_service_files() {
     local -a targets=() backups=() candidates=()
     systemctl is-active --quiet "$service" && original_active=1
     systemctl is-enabled --quiet "$service" && original_enabled=1
-    # 所有备份成功后才替换任何目标，避免第二份备份失败留下半份配置。
+    # ���б��ݳɹ�����滻�κ�Ŀ�꣬����ڶ��ݱ���ʧ�����°�����á�
     while (( $# )); do
         candidate=$1 target=$2; shift 2
         if cmp -s -- "$candidate" "$target"; then
@@ -737,19 +737,19 @@ apply_service_files() {
         changed=1
     done
     if ! "$validator"; then
-        error "$service 配置校验失败，恢复本次修改"
+        error "$service ����У��ʧ�ܣ��ָ������޸�"
         restore_service_files
         return 1
     fi
     if (( changed == 1 || original_active == 0 )); then
         if [[ "$service" == iperf3-server.service ]]; then systemctl daemon-reload || { restore_service_files; return 1; }; fi
         if ! systemctl restart "$service" || ! service_is_ready "$service"; then
-            error "$service 启动失败，恢复原配置和运行状态"
+            error "$service ����ʧ�ܣ��ָ�ԭ���ú�����״̬"
             restore_service_state
             return 1
         fi
     else
-        info "$service 配置未变化且已运行，跳过备份、写入和重启"
+        info "$service ����δ�仯�������У��������ݡ�д�������"
     fi
     if [[ "$enable_service" == 1 ]] && ! systemctl is-enabled --quiet "$service"; then
         if ! systemctl enable "$service"; then
@@ -763,7 +763,7 @@ restore_service_state() {
     restore_service_files || return 1
     if (( original_active )); then
         if ! systemctl restart "$service" || ! systemctl is-active --quiet "$service"; then
-            error "$service 原配置已恢复，但服务恢复失败，请检查 journalctl -u $service"; return 1
+            error "$service ԭ�����ѻָ���������ָ�ʧ�ܣ����� journalctl -u $service"; return 1
         fi
     else
         systemctl stop "$service" || return 1
@@ -771,7 +771,7 @@ restore_service_state() {
     if (( original_enabled == 0 )); then systemctl disable "$service" || return 1; fi
 }
 
-# 使用 apply_service_files 的局部数组（Bash 动态作用域），不接触未纳入事务的文件。
+# ʹ�� apply_service_files �ľֲ����飨Bash ��̬�����򣩣����Ӵ�δ����������ļ���
 restore_service_files() {
     local index failed=0
     for ((index=${#targets[@]}-1; index>=0; index--)); do
@@ -782,7 +782,7 @@ restore_service_files() {
         fi
     done
     [[ "$service" != iperf3-server.service ]] || systemctl daemon-reload || failed=1
-    (( failed == 0 )) || error '部分配置恢复失败，请使用保留的 .bak 文件人工恢复'
+    (( failed == 0 )) || error '�������ûָ�ʧ�ܣ���ʹ�ñ����� .bak �ļ��˹��ָ�'
     return "$failed"
 }
 
@@ -801,7 +801,7 @@ service_is_ready() {
         if [[ "$pid" =~ ^[1-9][0-9]*$ && "$listeners" == *"pid=$pid,"* ]]; then return 0; fi
         sleep 1
     done
-    error 'iperf3 未建立属于目标服务的 TCP 监听'
+    error 'iperf3 δ��������Ŀ������ TCP ����'
     return 1
 }
 
@@ -815,8 +815,8 @@ install_file_if_changed() {
 }
 
 configure_hostname() {
-step "修改主机名"
-[[ -n "$NEW_HOSTNAME" ]] || { info "跳过主机名修改"; return 0; }
+step "�޸�������"
+[[ -n "$NEW_HOSTNAME" ]] || { info "�����������޸�"; return 0; }
     HOSTS_NAMES="$NEW_HOSTNAME"
     SHORT_HOSTNAME="${NEW_HOSTNAME%%.*}"
     if [[ "$SHORT_HOSTNAME" != "$NEW_HOSTNAME" ]]; then
@@ -829,7 +829,7 @@ step "修改主机名"
     fi
     local candidate
 
-    # 防止云镜像的 cloud-init 在重启后恢复云厂商下发的旧主机名。
+    # ��ֹ�ƾ���� cloud-init ��������ָ��Ƴ����·��ľ���������
     if command -v cloud-init &>/dev/null; then
         install -d -m 0755 /etc/cloud/cloud.cfg.d
         candidate=$(mktemp /etc/cloud/cloud.cfg.d/.vps-hostname.XXXXXX)
@@ -837,7 +837,7 @@ step "修改主机名"
         install_file_if_changed "$candidate" /etc/cloud/cloud.cfg.d/99-vps-preserve-hostname.cfg
     fi
 
-    # FQDN 在前、短主机名在后，避免 sudo 报 "unable to resolve host"。
+    # FQDN ��ǰ�����������ں󣬱��� sudo �� "unable to resolve host"��
     candidate=$(mktemp /etc/.vps-hosts.XXXXXX)
     awk -v names="$HOSTS_NAMES" '
         $1 == "127.0.1.1" { if (!found++) print "127.0.1.1\t" names; next }
@@ -845,33 +845,33 @@ step "修改主机名"
         END { if (!found) print "127.0.1.1\t" names }
     ' /etc/hosts > "$candidate"
     install_file_if_changed "$candidate" /etc/hosts
-    info "主机名已设置为: $NEW_HOSTNAME（/etc/hosts 已同步）"
+    info "������������Ϊ: $NEW_HOSTNAME��/etc/hosts ��ͬ����"
 }
 
 install_base() {
-# ---------- 2. 系统更新 & 安装基础工具 ----------
-step "系统更新 & 安装基础工具"
-# 非交互模式：避免 conffile 冲突弹窗和 needrestart 交互卡死脚本
+# ---------- 2. ϵͳ���� & ��װ�������� ----------
+step "ϵͳ���� & ��װ��������"
+# �ǽ���ģʽ������ conffile ��ͻ������ needrestart ���������ű�
 export DEBIAN_FRONTEND=noninteractive
 export NEEDRESTART_MODE=a
-# ---------- 更新软件包索引与系统升级 ----------
+# ---------- ����������������ϵͳ���� ----------
 case "${UPGRADE_SYSTEM:-1}" in
     0|1) ;;
-    *) error "UPGRADE_SYSTEM 仅支持 0 或 1"; exit 1 ;;
+    *) error "UPGRADE_SYSTEM ��֧�� 0 �� 1"; exit 1 ;;
 esac
 if ! apt-get update -o APT::Update::Error-Mode=any; then
-    error "软件包索引更新失败，停止初始化；请解决 APT 错误后重试"
+    error "��������������ʧ�ܣ�ֹͣ��ʼ�������� APT ���������"
     exit 1
 fi
 if [[ "${UPGRADE_SYSTEM:-1}" == 1 ]]; then
     if ! apt-get upgrade -y -o Dpkg::Options::="--force-confold"; then
-        error "系统升级失败，停止初始化；请解决 APT 错误后重试"
+        error "ϵͳ����ʧ�ܣ�ֹͣ��ʼ�������� APT ���������"
         exit 1
     fi
 else
-    info "已通过 UPGRADE_SYSTEM=0 跳过系统升级，仍更新索引并安装所需工具"
+    info "��ͨ�� UPGRADE_SYSTEM=0 ����ϵͳ�������Ը�����������װ���蹤��"
 fi
-# ---------- 系统升级处理结束 ----------
+# ---------- ϵͳ������������ ----------
 apt-get install -y curl wget ca-certificates tar
 if [[ "${VPS_MODE:-full}" == full ]]; then apt-get install -y unattended-upgrades; fi
 if [[ "$VPS_SCENE" == domestic ]]; then
@@ -881,14 +881,14 @@ else
     if [[ "${IPERF3_ACTION:-0}" == 1 ]]; then apt-get install -y iperf3 iproute2; fi
     if [[ "${SB_UPDATE_ACTION:-0}" == 1 ]]; then apt-get install -y cron; fi
 fi
-info "系统更新及基础工具安装完成"
+info "ϵͳ���¼��������߰�װ���"
 }
 
 configure_tcp() {
-# ---------- 3. TCP 调优 ----------
-step "TCP 调优 ($SCENE_NAME)"
+# ---------- 3. TCP ���� ----------
+step "TCP ���� ($SCENE_NAME)"
 
-# 尝试加载 BBR 与 fq；容器型 VPS 可能由宿主机统一控制，实例内无法修改。
+# ���Լ��� BBR �� fq�������� VPS ������������ͳһ���ƣ�ʵ�����޷��޸ġ�
 modprobe tcp_bbr 2>/dev/null || true
 modprobe sch_fq 2>/dev/null || true
 AVAILABLE_CC=$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || true)
@@ -904,10 +904,10 @@ if grep -qw bbr <<< "$AVAILABLE_CC"; then
     fi
 elif [[ -n "$CURRENT_CC" ]]; then
     TCP_CC="$CURRENT_CC"
-    warn "当前内核未提供 BBR，将保留拥塞控制算法: $TCP_CC"
+    warn "��ǰ�ں�δ�ṩ BBR��������ӵ�������㷨: $TCP_CC"
 else
     TCP_CC=""
-    warn "宿主机未向实例暴露 TCP 拥塞控制接口，无法在实例内启用 BBR"
+    warn "������δ��ʵ����¶ TCP ӵ�����ƽӿڣ��޷���ʵ�������� BBR"
 fi
 
 install -d -m 0755 /etc/sysctl.d
@@ -917,21 +917,21 @@ APPLIED_SYSCTL_KEYS=()
 APPLIED_SYSCTL_COUNT=0
 SKIPPED_SYSCTL_COUNT=0
 
-# 只将内核实际暴露且允许写入的参数加入持久化配置。
-# 这样在 LXC/OpenVZ 等受限容器中也不会因个别 sysctl 失败而中断整个初始化。
+# ֻ���ں�ʵ�ʱ�¶������д��Ĳ�������־û����á�
+# ������ LXC/OpenVZ ������������Ҳ��������� sysctl ʧ�ܶ��ж�������ʼ����
 try_sysctl() {
     local key=$1
     local value=$2
     local output
 
     if ! sysctl -n "$key" >/dev/null 2>&1; then
-        warn "跳过 $key：宿主机未暴露该参数"
+        warn "���� $key��������δ��¶�ò���"
         ((SKIPPED_SYSCTL_COUNT += 1))
         return 0
     fi
 
     if ! output=$(sysctl -w "$key=$value" 2>&1); then
-        warn "跳过 $key：$output"
+        warn "���� $key��$output"
         ((SKIPPED_SYSCTL_COUNT += 1))
         return 0
     fi
@@ -943,19 +943,19 @@ try_sysctl() {
 
 cat > "$SYSCTL_FILE" << 'SYSCTL_EOF'
 # ============================================================
-# VPS TCP 调优 - 整合入口按场景选择的配置
-# 参数不会改变实际运营商路由
-# 仅包含本机内核实际支持且允许写入的参数
+# VPS TCP ���� - ������ڰ�����ѡ�������
+# ��������ı�ʵ����Ӫ��·��
+# �����������ں�ʵ��֧��������д��Ĳ���
 # ============================================================
 SYSCTL_EOF
 
-printf '\n# ---------- 拥塞控制 ----------\n' >> "$SYSCTL_FILE"
+printf '\n# ---------- ӵ������ ----------\n' >> "$SYSCTL_FILE"
 try_sysctl net.core.default_qdisc fq
 if [[ -n "$TCP_CC" ]]; then
     try_sysctl net.ipv4.tcp_congestion_control "$TCP_CC"
 fi
 
-printf '\n# ---------- 连接队列 ----------\n' >> "$SYSCTL_FILE"
+printf '\n# ---------- ���Ӷ��� ----------\n' >> "$SYSCTL_FILE"
 try_sysctl net.core.somaxconn 4096
 try_sysctl net.ipv4.tcp_max_syn_backlog 4096
 try_sysctl net.core.netdev_max_backlog 4096
@@ -965,16 +965,16 @@ try_sysctl net.ipv4.tcp_keepalive_time 600
 try_sysctl net.ipv4.tcp_keepalive_intvl 30
 try_sysctl net.ipv4.tcp_keepalive_probes 5
 
-printf '\n# ---------- 基础保护与路径兼容 ----------\n' >> "$SYSCTL_FILE"
+printf '\n# ---------- ����������·������ ----------\n' >> "$SYSCTL_FILE"
 try_sysctl net.ipv4.tcp_syncookies 1
 try_sysctl net.ipv4.tcp_mtu_probing 1
 try_sysctl net.ipv4.tcp_ecn 2
 
-printf '\n# ---------- 出站端口 ----------\n' >> "$SYSCTL_FILE"
+printf '\n# ---------- ��վ�˿� ----------\n' >> "$SYSCTL_FILE"
 try_sysctl net.ipv4.ip_local_port_range "10000 65535"
 
-printf '\n# ---------- TCP 自动调节缓冲区上限（按场景选择）----------\n' >> "$SYSCTL_FILE"
-# 保留原版本的缓冲区差异：HK/精简 16 MiB，LA/DE 32 MiB。
+printf '\n# ---------- TCP �Զ����ڻ��������ޣ�������ѡ��----------\n' >> "$SYSCTL_FILE"
+# ����ԭ�汾�Ļ��������죺HK/���� 16 MiB��LA/DE 32 MiB��
 local buffer_max=16777216 wmem_default=65536
 [[ "$VPS_SCENE" == hk || "$VPS_SCENE" == minimal ]] || buffer_max=33554432
 [[ "$VPS_SCENE" != de ]] || wmem_default=16384
@@ -988,19 +988,19 @@ if [[ "$VPS_SCENE" == de ]]; then
     try_sysctl net.ipv4.tcp_slow_start_after_idle 0
 fi
 
-printf '\n# ---------- 内存行为 ----------\n' >> "$SYSCTL_FILE"
+printf '\n# ---------- �ڴ���Ϊ ----------\n' >> "$SYSCTL_FILE"
 try_sysctl vm.swappiness 10
 
 if (( APPLIED_SYSCTL_COUNT == 0 )); then
     rm -f "$SYSCTL_FILE"
-    warn "宿主机禁止修改全部目标参数，已跳过 TCP 调优并继续后续初始化"
+    warn "��������ֹ�޸�ȫ��Ŀ������������� TCP ���Ų�����������ʼ��"
 else
     install_file_if_changed "$SYSCTL_FILE" "$SYSCTL_TARGET"
     SYSCTL_FILE=$SYSCTL_TARGET
-    info "TCP 调优已应用 $APPLIED_SYSCTL_COUNT 项，跳过 $SKIPPED_SYSCTL_COUNT 项"
-    info "仅将成功参数写入 $SYSCTL_FILE"
+    info "TCP ������Ӧ�� $APPLIED_SYSCTL_COUNT ����� $SKIPPED_SYSCTL_COUNT ��"
+    info "�����ɹ�����д�� $SYSCTL_FILE"
 
-    # /etc/sysctl.conf 在 sysctl --system 中较晚加载。仅注释已成功接管的同名键。
+    # /etc/sysctl.conf �� sysctl --system �н������ء���ע���ѳɹ��ӹܵ�ͬ������
     SYSCTL_BACKED_UP=false
     if [[ -f /etc/sysctl.conf ]]; then
         for key in "${APPLIED_SYSCTL_KEYS[@]}"; do
@@ -1010,30 +1010,30 @@ else
                     cp -a /etc/sysctl.conf "/etc/sysctl.conf.bak.$(date +%Y%m%d%H%M%S)"
                     SYSCTL_BACKED_UP=true
                 fi
-                sed -i -E "s|^[[:space:]]*(${escaped_key})[[:space:]]*=|# [vps-tuning 已接管] &|" /etc/sysctl.conf
+                sed -i -E "s|^[[:space:]]*(${escaped_key})[[:space:]]*=|# [vps-tuning �ѽӹ�] &|" /etc/sysctl.conf
             fi
         done
-        [[ "$SYSCTL_BACKED_UP" == true ]] && info "已备份 sysctl.conf，并仅注释成功接管的同名参数"
+        [[ "$SYSCTL_BACKED_UP" == true ]] && info "�ѱ��� sysctl.conf������ע�ͳɹ��ӹܵ�ͬ������"
     fi
 fi
 
-# 验证最终使用的拥塞控制算法
+# ��֤����ʹ�õ�ӵ�������㷨
 CURRENT_CC=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "")
 if [[ "$TCP_CC" == "bbr" && "$CURRENT_CC" == "bbr" ]]; then
-    info "BBR 已成功启用"
+    info "BBR �ѳɹ�����"
 elif [[ -n "$CURRENT_CC" ]]; then
-    warn "当前拥塞控制算法: $CURRENT_CC"
+    warn "��ǰӵ�������㷨: $CURRENT_CC"
 else
-    warn "无法读取拥塞控制算法；该项由 VPS 宿主机管理"
+    warn "�޷���ȡӵ�������㷨�������� VPS ����������"
 fi
 }
 
 configure_iperf3() {
-# ---------- 配置 iperf3 后台服务 ----------
-# 可在运行脚本前通过 IPERF3_PORT 环境变量修改端口；DynamicUser 需要非特权端口。
+# ---------- ���� iperf3 ��̨���� ----------
+# �������нű�ǰͨ�� IPERF3_PORT ���������޸Ķ˿ڣ�DynamicUser ��Ҫ����Ȩ�˿ڡ�
 IPERF3_PORT="${IPERF3_PORT:-5201}"
 if [[ ! "$IPERF3_PORT" =~ ^[1-9][0-9]{3,4}$ ]] || (( IPERF3_PORT < 1024 || IPERF3_PORT > 65535 )); then
-    error "IPERF3_PORT 必须是 1024-65535 之间的整数（当前: $IPERF3_PORT）"
+    error "IPERF3_PORT ������ 1024-65535 ֮�����������ǰ: $IPERF3_PORT��"
     exit 1
 fi
 
@@ -1042,7 +1042,7 @@ listeners=$(ss -H -ltnp "sport = :${IPERF3_PORT}") || return 1
 current_pid=$(systemctl show --property=MainPID --value iperf3-server.service 2>/dev/null || true)
 if [[ -n "$listeners" ]]; then
     if [[ ! "$current_pid" =~ ^[1-9][0-9]*$ ]] || grep -qv "pid=${current_pid}," <<< "$listeners"; then
-        error "端口 $IPERF3_PORT 已被其他进程占用（可能是 iperf3.service），请换用 IPERF3_PORT 或先处理已有服务"
+        error "�˿� $IPERF3_PORT �ѱ���������ռ�ã������� iperf3.service�����뻻�� IPERF3_PORT ���ȴ������з���"
         return 1
     fi
 fi
@@ -1080,31 +1080,31 @@ WantedBy=multi-user.target
 EOF
 
 apply_service_files iperf3-server.service validate_none 1 "$candidate" /etc/systemd/system/iperf3-server.service || return 1
-info "iperf3 已在后台运行并设置为开机自启（端口: $IPERF3_PORT）"
-warn "iperf3 默认无身份认证，请仅向可信 IP 开放 TCP/UDP $IPERF3_PORT"
+info "iperf3 ���ں�̨���в�����Ϊ�����������˿�: $IPERF3_PORT��"
+warn "iperf3 Ĭ����������֤���������� IP ���� TCP/UDP $IPERF3_PORT"
 }
 
 install_nexttrace() {
-# ---------- 4. 安装 NextTrace ----------
-step "安装 NextTrace"
+# ---------- 4. ��װ NextTrace ----------
+step "��װ NextTrace"
 if command -v nexttrace &>/dev/null || command -v nxtrace &>/dev/null; then
-    warn "NextTrace 已安装，跳过"
+    warn "NextTrace �Ѱ�װ������"
 else
     run_installer https://nxtrace.org/nt || {
-        error "NextTrace 安装器失败"
+        error "NextTrace ��װ��ʧ��"
         return 1
     }
     if command -v nexttrace &>/dev/null || command -v nxtrace &>/dev/null; then
-        info "NextTrace 安装完成"
+        info "NextTrace ��װ���"
     else
-        error "NextTrace 未检测到，所选安装未完成"
+        error "NextTrace δ��⵽����ѡ��װδ���"
         return 1
     fi
 fi
 }
 
-# 233boy 将实际内核放在 /etc/sing-box/bin，PATH 中的 sing-box 通常是管理脚本。
-# 不以管理入口是否存在或安装器退出码单独判断成功；不读取或输出节点配置。
+# 233boy ��ʵ���ں˷��� /etc/sing-box/bin��PATH �е� sing-box ͨ���ǹ����ű���
+# ���Թ�������Ƿ���ڻ�װ���˳��뵥���жϳɹ�������ȡ������ڵ����á�
 probe_singbox_installation() {
     SB_CORE_BIN=''
     SB_CORE_VERSION=''
@@ -1116,7 +1116,7 @@ probe_singbox_installation() {
     fi
     [[ -n "$SB_CORE_BIN" ]] || return 1
     SB_INSTALL_STATE=invalid-core
-    # 管理脚本的 version 参数不等同于直接执行内核；残留时也不调用它。
+    # �����ű��� version ��������ͬ��ֱ��ִ���ںˣ�����ʱҲ����������
     if [[ "$(readlink -f -- "$SB_CORE_BIN" 2>/dev/null)" == /etc/sing-box/sh/sing-box.sh ]]; then return 1; fi
     if ! SB_CORE_VERSION=$(timeout --kill-after=5s 10 "$SB_CORE_BIN" version 2>/dev/null); then return 1; fi
     [[ "$SB_CORE_VERSION" == 'sing-box version '* ]] || return 1
@@ -1128,19 +1128,19 @@ probe_singbox_installation() {
 
 report_singbox_problem() {
     case "$SB_INSTALL_STATE" in
-        missing) error '未检测到可执行的 sing-box 内核，安装未完成' ;;
-        invalid-core) error 'sing-box 内核版本检查未通过，或仅留下了管理入口' ;;
-        inactive) error 'sing-box 内核可用，但 sing-box.service 未运行，安装未通过服务检查' ;;
+        missing) error 'δ��⵽��ִ�е� sing-box �ںˣ���װδ���' ;;
+        invalid-core) error 'sing-box �ں˰汾���δͨ������������˹������' ;;
+        inactive) error 'sing-box �ں˿��ã��� sing-box.service δ���У���װδͨ��������' ;;
     esac
-    info '可在服务器上检查：systemctl status sing-box.service --no-pager'
-    info '检查配置前请保留现有节点文件；本脚本不会为修复状态而自动重装。'
+    info '���ڷ������ϼ�飺systemctl status sing-box.service --no-pager'
+    info '�������ǰ�뱣�����нڵ��ļ������ű�����Ϊ�޸�״̬���Զ���װ��'
 }
 
 install_singbox() {
-    step '安装 sing-box'
+    step '��װ sing-box'
     local installer_status=0
     if probe_singbox_installation; then
-        info "sing-box 已安装（$SB_CORE_VERSION），服务运行中，跳过安装"
+        info "sing-box �Ѱ�װ��$SB_CORE_VERSION�������������У�������װ"
         return 0
     fi
     if [[ "$SB_INSTALL_STATE" != missing || -e /usr/local/bin/sb || -d /etc/sing-box ]]; then
@@ -1155,25 +1155,25 @@ install_singbox() {
     fi
     if probe_singbox_installation; then
         if (( installer_status != 0 )); then
-            warn "安装器退出码为 $installer_status；实际内核和服务检查均已通过，继续初始化"
+            warn "��װ���˳���Ϊ $installer_status��ʵ���ں˺ͷ��������ͨ����������ʼ��"
         fi
-        info "sing-box 安装完成（$SB_CORE_VERSION），服务运行中"
+        info "sing-box ��װ��ɣ�$SB_CORE_VERSION��������������"
         return 0
     fi
     if (( installer_status != 0 )); then
-        error "sing-box 安装器退出码为 $installer_status，实际安装检查也未通过"
+        error "sing-box ��װ���˳���Ϊ $installer_status��ʵ�ʰ�װ���Ҳδͨ��"
     fi
     report_singbox_problem
     return 1
 }
 
 configure_fail2ban() {
-# ---------- 6. 配置 fail2ban ----------
-step "配置 fail2ban"
+# ---------- 6. ���� fail2ban ----------
+step "���� fail2ban"
 
 install -d -m 0755 /etc/fail2ban/jail.d /etc/fail2ban/fail2ban.d
 
-# 使用最后加载的 .local drop-in，不覆盖用户已有 jail.local；已有 ignoreip 也会保留。
+# ʹ�������ص� .local drop-in���������û����� jail.local������ ignoreip Ҳ�ᱣ����
 local jail_candidate db_candidate
 jail_candidate=$(mktemp /etc/fail2ban/jail.d/.vps-jail.XXXXXX)
 db_candidate=$(mktemp /etc/fail2ban/fail2ban.d/.vps-db.XXXXXX)
@@ -1182,7 +1182,7 @@ cat > "$jail_candidate" << 'EOF'
 ignoreself = true
 usedns = no
 
-# 首次封 1 小时；重复攻击自动按 1、2、4... 倍递增，最长 7 天。
+# �״η� 1 Сʱ���ظ������Զ��� 1��2��4... ��������� 7 �졣
 bantime = 1h
 bantime.increment = true
 bantime.maxtime = 1w
@@ -1191,13 +1191,13 @@ maxretry = 5
 
 [sshd]
 enabled = true
-# 统一从 journald 读取 SSH 日志，兼容没有 /var/log/auth.log 的精简系统。
+# ͳһ�� journald ��ȡ SSH ��־������û�� /var/log/auth.log �ľ���ϵͳ��
 backend = systemd
-# 封禁来源的所有端口，兼容自定义 SSH 端口。
+# �����Դ�����ж˿ڣ������Զ��� SSH �˿ڡ�
 banaction = %(banaction_allports)s
 EOF
 
-# 数据库保留 30 天，足以支持递增封禁，同时避免永久增长。
+# ���ݿⱣ�� 30 �죬����֧�ֵ��������ͬʱ��������������
 cat > "$db_candidate" << 'EOF'
 [Definition]
 dbpurgeage = 2592000
@@ -1206,16 +1206,16 @@ EOF
 apply_service_files fail2ban validate_fail2ban 1 \
     "$jail_candidate" /etc/fail2ban/jail.d/99-vps-sshd.local \
     "$db_candidate" /etc/fail2ban/fail2ban.d/99-vps-local.local || return 1
-info "fail2ban 已配置并启动（SSH 递增封禁，最长 7 天）"
+info "fail2ban �����ò�������SSH ���������� 7 �죩"
 }
 
-# 手动更新和定时任务共享锁、超时与更新后的服务验收。
+# �ֶ����ºͶ�ʱ������������ʱ����º�ķ������ա�
 acquire_sb_update_lock() {
     exec 9>/run/lock/sb-auto-update.lock || return 1
     local result=0
     flock -n -E 75 9 || result=$?
     if (( result == 75 )); then return 75; fi
-    if (( result != 0 )); then error '无法取得 sing-box 更新锁'; return 1; fi
+    if (( result != 0 )); then error '�޷�ȡ�� sing-box ������'; return 1; fi
 }
 
 wait_singbox_ready() {
@@ -1229,15 +1229,15 @@ wait_singbox_ready() {
             consecutive=0
         fi
     done
-    error 'sing-box 更新后内核或服务检查失败，请检查 sing-box.service 日志'
+    error 'sing-box ���º��ں˻������ʧ�ܣ����� sing-box.service ��־'
     return 1
 }
 
 singbox_update_commands() {
     local part caddy_active=0
-    [[ -x /usr/local/bin/sb ]] || { error '未找到可执行的 sb 管理脚本'; return 1; }
+    [[ -x /usr/local/bin/sb ]] || { error 'δ�ҵ���ִ�е� sb �����ű�'; return 1; }
     for part in sh core; do
-        info "更新 sing-box：$part"
+        info "���� sing-box��$part"
         timeout --signal=TERM --kill-after=30s 900 /usr/local/bin/sb update "$part" </dev/null || return 1
     done
     wait_singbox_ready || return 1
@@ -1250,13 +1250,13 @@ singbox_update_commands() {
 }
 
 update_singbox() (
-    acquire_sb_update_lock || { error '已有 sing-box 更新正在运行，或无法取得锁'; return 1; }
+    acquire_sb_update_lock || { error '���� sing-box �����������У����޷�ȡ����'; return 1; }
     singbox_update_commands
 )
 
 configure_sb_update() {
-    step '构建 sing-box 自动更新脚本'
-    [[ -x /usr/local/bin/sb ]] || { error '未找到可执行的 sb 管理脚本'; return 1; }
+    step '���� sing-box �Զ����½ű�'
+    [[ -x /usr/local/bin/sb ]] || { error 'δ�ҵ���ִ�е� sb �����ű�'; return 1; }
     local candidate
     candidate=$(mktemp /usr/local/bin/.sb-update.XXXXXX) || return 1
     if ! {
@@ -1271,7 +1271,7 @@ SCRIPT_EOF
         cat <<'SCRIPT_EOF'
 lock_status=0
 acquire_sb_update_lock || lock_status=$?
-if (( lock_status == 75 )); then info '已有更新任务正在运行，本次跳过'; exit 0; fi
+if (( lock_status == 75 )); then info '���и��������������У���������'; exit 0; fi
 (( lock_status == 0 )) || exit 1
 LOG_FILE=/var/log/sb-update.log
 if [[ -f "$LOG_FILE" ]]; then
@@ -1279,11 +1279,11 @@ if [[ -f "$LOG_FILE" ]]; then
     if (( log_size >= 5 * 1024 * 1024 )); then mv -f -- "$LOG_FILE" "${LOG_FILE}.1" || exit 1; fi
 fi
 exec >>"$LOG_FILE" 2>&1
-date '+%Y-%m-%d %H:%M:%S 开始更新'
+date '+%Y-%m-%d %H:%M:%S ��ʼ����'
 if singbox_update_commands; then
-    info '更新完成，sing-box 内核及服务检查通过'
+    info '������ɣ�sing-box �ں˼�������ͨ��'
 else
-    error '更新失败或服务未就绪，请检查日志'
+    error '����ʧ�ܻ����δ������������־'
     exit 1
 fi
 SCRIPT_EOF
@@ -1296,16 +1296,16 @@ SCRIPT_EOF
     if ! systemctl is-enabled --quiet cron; then systemctl enable cron || return 1; fi
     systemctl is-active --quiet cron || return 1
     set_sb_update_cron 1 || return 1
-    info 'sing-box 自动更新脚本已部署（每天 04:00 执行，包含锁、超时和服务验收）'
+    info 'sing-box �Զ����½ű��Ѳ���ÿ�� 04:00 ִ�У�����������ʱ�ͷ������գ�'
 }
 
 
 configure_security() {
-    step '自动安全更新：保留已有更新来源、重启及清理策略'
+    step '�Զ���ȫ���£��������и�����Դ����������������'
     local candidate
     local -a apt_files=()
-    # 不覆盖发行版或用户的 20auto-upgrades / 50unattended-upgrades。
-    # 仅在没有传统周期配置时维护本脚本的独立 drop-in。
+    # �����Ƿ��а���û��� 20auto-upgrades / 50unattended-upgrades��
+    # ����û�д�ͳ��������ʱά�����ű��Ķ��� drop-in��
     if [[ ! -e /etc/apt/apt.conf.d/20auto-upgrades ]]; then
         candidate=$(mktemp /etc/apt/apt.conf.d/.vps-auto.XXXXXX)
         cat > "$candidate" <<'EOF'
@@ -1320,12 +1320,12 @@ EOF
         systemctl enable --now apt-daily.timer apt-daily-upgrade.timer || return 1
     fi
     if systemctl is-active --quiet apt-daily.timer && systemctl is-active --quiet apt-daily-upgrade.timer; then
-        info 'APT 调度定时器运行中，自动更新是否启用及更新来源沿用 APT 策略'
+        info 'APT ���ȶ�ʱ�������У��Զ������Ƿ����ü�������Դ���� APT ����'
     else
-        warn 'APT 调度定时器未全部运行，自动安全更新可能不会执行；已保留原调度策略，请检查 apt-daily.timer / apt-daily-upgrade.timer'
+        warn 'APT ���ȶ�ʱ��δȫ�����У��Զ���ȫ���¿��ܲ���ִ�У��ѱ���ԭ���Ȳ��ԣ����� apt-daily.timer / apt-daily-upgrade.timer'
     fi
 
-    step 'journald 日志上限 100M'
+    step 'journald ��־���� 100M'
     install -d -m 0755 /etc/systemd/journald.conf.d
     candidate=$(mktemp /etc/systemd/journald.conf.d/.vps-limit.XXXXXX)
     printf '[Journal]\nSystemMaxUse=100M\nRuntimeMaxUse=100M\n' > "$candidate"
@@ -1333,17 +1333,17 @@ EOF
 }
 
 install_docker() {
-# ---------- 3. 安装 Docker & Compose ----------
-step "安装 Docker & Compose"
+# ---------- 3. ��װ Docker & Compose ----------
+step "��װ Docker & Compose"
 
 if command -v docker &>/dev/null; then
-    warn "Docker 已安装: $(docker --version)"
+    warn "Docker �Ѱ�װ: $(docker --version)"
 else
-    info "使用 Docker 官方 APT 仓库安装 Docker..."
+    info "ʹ�� Docker �ٷ� APT �ֿⰲװ Docker..."
     install -m 0755 -d /etc/apt/keyrings
     curl -fsSL "https://download.docker.com/linux/${ID}/gpg" \
         -o /etc/apt/keyrings/docker.asc || {
-        error "Docker 官方仓库签名密钥下载失败，请检查网络后重试"
+        error "Docker �ٷ��ֿ�ǩ����Կ����ʧ�ܣ��������������"
         exit 1
     }
     chmod a+r /etc/apt/keyrings/docker.asc
@@ -1360,18 +1360,18 @@ DOCKER_REPO_EOF
 
     apt-get update -o APT::Update::Error-Mode=any
     apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-    info "Docker 安装完成: $(docker --version)"
+    info "Docker ��װ���: $(docker --version)"
 fi
 
-# 已有 Docker 也独立检查 Compose，任何缺件应在修改 daemon 配置前解决。
+# ���� Docker Ҳ������� Compose���κ�ȱ��Ӧ���޸� daemon ����ǰ�����
 ensure_compose_plugin || return 1
-command -v dockerd >/dev/null 2>&1 || { error '未找到本机 dockerd；此入口要求本机 rootful Docker Engine'; return 1; }
+command -v dockerd >/dev/null 2>&1 || { error 'δ�ҵ����� dockerd�������Ҫ�󱾻� rootful Docker Engine'; return 1; }
 
-# 只使用部署者显式提供的镜像站；未提供时保留现有 mirrors。
-jq -e 'type == "array" and all(.[]; type == "string" and test("^https?://[^[:space:]]+$"))' <<< "$DOCKER_MIRRORS" >/dev/null || die 'DOCKER_MIRRORS 必须为 HTTP(S) 地址的 JSON 数组'
-# 配置 Docker daemon（可选镜像加速 + 日志限制）
+# ֻʹ�ò�������ʽ�ṩ�ľ���վ��δ�ṩʱ�������� mirrors��
+jq -e 'type == "array" and all(.[]; type == "string" and test("^https?://[^[:space:]]+$"))' <<< "$DOCKER_MIRRORS" >/dev/null || die 'DOCKER_MIRRORS ����Ϊ HTTP(S) ��ַ�� JSON ����'
+# ���� Docker daemon����ѡ������� + ��־���ƣ�
 mkdir -p /etc/docker
-# 将本脚本的配置合并到现有 daemon.json；写入前校验，重启失败则回滚
+# �����ű������úϲ������� daemon.json��д��ǰУ�飬����ʧ����ع�
 DAEMON_FILE="/etc/docker/daemon.json"
 DAEMON_FRAGMENT=$(mktemp /etc/docker/daemon.fragment.XXXXXX)
 DAEMON_CANDIDATE=$(mktemp /etc/docker/daemon.candidate.XXXXXX)
@@ -1394,7 +1394,7 @@ fi
 if [[ -f "${DAEMON_FILE}" ]]; then
     if ! jq -s '.[0] * .[1]' "${DAEMON_FILE}" "${DAEMON_FRAGMENT}" > "${DAEMON_CANDIDATE}"; then
         rm -f "${DAEMON_FRAGMENT}" "${DAEMON_CANDIDATE}"
-        error "现有 daemon.json 无法解析，未修改原文件"
+        error "���� daemon.json �޷�������δ�޸�ԭ�ļ�"
         exit 1
     fi
 else
@@ -1404,19 +1404,19 @@ fi
 if ! jq empty "${DAEMON_CANDIDATE}" 2>/dev/null || \
    ! dockerd --validate --config-file "${DAEMON_CANDIDATE}" &>/dev/null; then
     rm -f "${DAEMON_FRAGMENT}" "${DAEMON_CANDIDATE}"
-    error "合并后的 daemon.json 未通过校验，原配置未修改"
+    error "�ϲ���� daemon.json δͨ��У�飬ԭ����δ�޸�"
     exit 1
 fi
 
 rm -f -- "$DAEMON_FRAGMENT"
 apply_service_files docker validate_docker 1 "$DAEMON_CANDIDATE" "$DAEMON_FILE" || return 1
-info "Docker daemon 已合并配置（按需设置镜像站 + 全局日志限制）"
+info "Docker daemon �Ѻϲ����ã��������þ���վ + ȫ����־���ƣ�"
 
-# 验证 compose 插件
+# ��֤ compose ���
 if docker compose version &>/dev/null; then
-    info "Docker Compose 就绪: $(docker compose version --short)"
+    info "Docker Compose ����: $(docker compose version --short)"
 else
-    error "Docker Compose 插件未安装，请检查 Docker 版本"
+    error "Docker Compose ���δ��װ������ Docker �汾"
     exit 1
 fi
 }
@@ -1428,23 +1428,23 @@ ensure_compose_plugin() {
         candidate=$(LC_ALL=C apt-cache policy "$package" | awk '/Candidate:/ {print $2; exit}') || return 1
         if [[ -n "$candidate" && "$candidate" != '(none)' ]]; then
             apt-get install -y -o Dpkg::Options::="--force-confold" "$package" || return 1
-            docker compose version >/dev/null 2>&1 || { error 'Compose 插件安装后仍不可用'; return 1; }
+            docker compose version >/dev/null 2>&1 || { error 'Compose �����װ���Բ�����'; return 1; }
             return 0
         fi
     done
-    error '已有 Docker 缺少 Compose v2+ 插件，当前 APT 源没有可用包；请先配置对应 Docker 仓库。尚未修改 daemon 配置。'
+    error '���� Docker ȱ�� Compose v2+ �������ǰ APT Դû�п��ð����������ö�Ӧ Docker �ֿ⡣��δ�޸� daemon ���á�'
     return 1
 }
 
 watchtower_api_version() {
     local version minimum minor
     version=$(docker version --format '{{.Server.APIVersion}}') || return 1
-    [[ "$version" =~ ^1\.([0-9]+)$ ]] || { error '无法读取 Docker 服务端 API 版本' >&2; return 1; }
+    [[ "$version" =~ ^1\.([0-9]+)$ ]] || { error '�޷���ȡ Docker ����� API �汾' >&2; return 1; }
     minor=${BASH_REMATCH[1]}
-    # Watchtower 1.7.1 默认 1.25 不被 Docker 29 接受；优先使用兼容的 1.44。
+    # Watchtower 1.7.1 Ĭ�� 1.25 ���� Docker 29 ���ܣ�����ʹ�ü��ݵ� 1.44��
     minimum=$(docker version --format '{{.Server.MinAPIVersion}}') || return 1
-    [[ "$minimum" =~ ^1\.([0-9]+)$ ]] || { error '无法读取 Docker 最低 API 版本' >&2; return 1; }
-    if (( BASH_REMATCH[1] > 44 )); then error 'Docker 最低 API 已高于 Watchtower 兼容范围，请停用或升级更新器' >&2; return 1; fi
+    [[ "$minimum" =~ ^1\.([0-9]+)$ ]] || { error '�޷���ȡ Docker ��� API �汾' >&2; return 1; }
+    if (( BASH_REMATCH[1] > 44 )); then error 'Docker ��� API �Ѹ��� Watchtower ���ݷ�Χ����ͣ�û�����������' >&2; return 1; fi
     if (( minor < 25 )); then return 1; fi
     if (( minor > 44 )); then minor=44; fi
     DOCKER_API_VERSION="1.$minor" docker version >/dev/null || return 1
@@ -1455,23 +1455,74 @@ prepare_filebrowser_storage() {
     [[ -n "${ENABLED_PROFILES[files]+x}" ]] || return 0
     local directory
     for directory in "$STACK_DIR/Filebrowser" "$STACK_DIR/Filebrowser/config" "$STACK_DIR/Filebrowser/database"; do
-        [[ ! -L "$directory" ]] || { error "拒绝修改符号链接目录：$directory"; return 1; }
+        [[ ! -L "$directory" ]] || { error "�ܾ��޸ķ�������Ŀ¼��$directory"; return 1; }
         if [[ ! -d "$directory" ]]; then install -d -m 0750 -o 0 -g 0 "$directory" || return 1; fi
     done
-    # FileBrowser 以 root 访问 /root；保留已有配置目录及 /root 的所有权和权限。
+    # FileBrowser �� root ���� /root��������������Ŀ¼�� /root ������Ȩ��Ȩ�ޡ�
+}
+
+# Compose �ƶ�Ŀ¼����ʹ��ԭ��Ŀ�� Redis �����������д�����ù��ֶ��������á�
+resolve_stack_identity() {
+    local configuration identity file_project='' file_volume='' containers project='' redis_project='' volume=''
+    local -a project_args=()
+    local fallback=${STACK_DIR%/}
+    fallback=${fallback##*/}
+    [[ "${STACK_DIR%/}" != /root ]] || fallback=stacks
+    containers=$(docker ps --all --format '{{.Names}}') || return 1
+    if grep -qx npm <<< "$containers"; then
+        project=$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project" }}' npm) || return 1
+        [[ "$project" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || { error '���� npm ����ȱ����Ч Compose ��Ŀ��ǩ��ֹͣ��������'; return 1; }
+    fi
+    if grep -qx redis <<< "$containers"; then
+        redis_project=$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project" }}' redis) || return 1
+        [[ "$redis_project" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || { error '���� redis ����ȱ����Ч Compose ��Ŀ��ǩ��ֹͣ��������'; return 1; }
+        [[ -z "$project" || "$project" == "$redis_project" ]] || { error '���� npm �� redis ���ڲ�ͬ��Ŀ��ֹͣ��������'; return 1; }
+        project=$redis_project
+        volume=$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{if eq .Type "volume"}}{{.Name}}{{end}}{{end}}{{end}}' redis) || return 1
+        [[ -n "$volume" ]] || { error '���� Redis �� /data δʹ�������������Ⱥ˶����ݣ�ֹͣ����'; return 1; }
+    fi
+    if [[ -f "$STACK_DIR/docker-compose.yml" ]]; then
+        if [[ -n "$project" ]]; then
+            project_args=(--project-name "$project")
+        elif [[ -z "${COMPOSE_PROJECT_NAME:-}" && "${STACK_DIR%/}" == /root ]] && ! grep -qE '^name[[:space:]]*:' "$STACK_DIR/docker-compose.yml"; then
+            # ��ģ��û�� name����ʹͣ��ʱ��ɾ��������Ǩ�� /root �������þ�Ĭ����Ŀ stacks��
+            project_args=(--project-name stacks)
+        fi
+        configuration=$(docker compose "${COMPOSE_ENV_ARGS[@]}" "${project_args[@]}" --profile '*' config --format json) || return 1
+        identity=$(python3 -c '
+import json,sys
+config=json.load(sys.stdin)
+print(config.get("name", ""))
+print(((config.get("volumes") or {}).get("redis-data") or {}).get("name", ""))
+' <<< "$configuration") || return 1
+        file_project=${identity%%$'\n'*}
+        if [[ "$identity" == *$'\n'* ]]; then file_volume=${identity#*$'\n'}; fi
+    fi
+    STACK_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-${project:-${file_project:-$fallback}}}
+    [[ "$STACK_PROJECT_NAME" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || { error 'Compose ��Ŀ��ֻ��ʹ��Сд��ĸ�����֡��»��ߺ����ַ���������ĸ�����ֿ�ͷ'; return 1; }
+    [[ -z "$project" || "$STACK_PROJECT_NAME" == "$project" ]] || { error 'COMPOSE_PROJECT_NAME ��������������Ŀ����ͬ��ֹͣ����'; return 1; }
+    if [[ -z "$volume" && "$file_project" == "$STACK_PROJECT_NAME" ]]; then volume=$file_volume; fi
+    STACK_REDIS_VOLUME_NAME=${volume:-${STACK_PROJECT_NAME}_redis-data}
+    [[ "$STACK_REDIS_VOLUME_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] || { error '�޷�ʶ������ Redis ���������ƣ�ֹͣ����'; return 1; }
 }
 
 deploy_services() {
+# ֻ����Ĭ��·������أ����Զ���Ǩ�����Ǿ����ݡ�
+if [[ "${STACK_DIR%/}" == /root && ! -f "$STACK_DIR/docker-compose.yml" && -f /opt/stacks/docker-compose.yml ]]; then
+    error '��⵽ /opt/stacks �ľɲ�������ͣ������ Compose��.browserless.env ��Ӧ������Ǩ�� /root������Ǩ�� /root/Music��OpenList ����Ǩ�� /root/OpenList��Redis ����ԭ��������'
+    error '�ű������Զ���Ǩ���ļ�����������Ŀ¼��ͨ�� STACK_DIR ָ����Ӧ�ð�Ŀ¼����������������Ⱥ˶Բ�Ǩ�����ݡ�'
+    return 1
+fi
 mkdir -p "${STACK_DIR}"
 
-# 为 RSSHub / Browserless 生成共享随机令牌，仅保存在服务器上；重跑时复用。
+# Ϊ RSSHub / Browserless ���ɹ���������ƣ��������ڷ������ϣ�����ʱ���á�
 ensure_browserless_env() {
     local env_file=$1 token temp_file
 
     if [[ -e "$env_file" ]]; then
         if [[ $(wc -l < "$env_file") -ne 1 ]] || \
            ! grep -qxE 'BROWSERLESS_TOKEN=[0-9a-f]{64}' "$env_file"; then
-            error "Browserless 令牌文件格式无效，请检查文件（不要公开其内容）: $env_file"
+            error "Browserless �����ļ���ʽ��Ч�������ļ�����Ҫ���������ݣ�: $env_file"
             return 1
         fi
         chmod 0600 "$env_file"
@@ -1480,7 +1531,7 @@ ensure_browserless_env() {
 
     token=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
     if [[ ! "$token" =~ ^[0-9a-f]{64}$ ]]; then
-        error "Browserless 随机令牌生成失败，未启动服务"
+        error "Browserless �����������ʧ�ܣ�δ��������"
         return 1
     fi
     temp_file=$(mktemp "${env_file}.XXXXXX")
@@ -1490,24 +1541,31 @@ ensure_browserless_env() {
 }
 
 BROWSERLESS_ENV_FILE="${STACK_DIR}/.browserless.env"
-ensure_browserless_env "$BROWSERLESS_ENV_FILE" || die 'Browserless 令牌文件不可用，停止部署'
-# 防止父进程的同名环境变量覆盖本次部署保存的令牌。
+ensure_browserless_env "$BROWSERLESS_ENV_FILE" || die 'Browserless �����ļ������ã�ֹͣ����'
+# ��ֹ�����̵�ͬ�������������Ǳ��β��𱣴�����ơ�
 unset BROWSERLESS_TOKEN
 COMPOSE_ENV_ARGS=(--env-file "$BROWSERLESS_ENV_FILE" -f "${STACK_DIR}/docker-compose.yml")
-info "Browserless 随机令牌已就绪（保存在服务器上，不输出令牌）"
+info "Browserless ��������Ѿ����������ڷ������ϣ���������ƣ�"
+resolve_stack_identity || return 1
 
 COMPOSE_TARGET="${STACK_DIR}/docker-compose.yml"
 COMPOSE_CANDIDATE=$(mktemp "${STACK_DIR}/.compose-candidate.XXXXXX")
 local watchtower_api=1.44
 if [[ "$WATCHTOWER_ACTION" == 1 ]]; then watchtower_api=$(watchtower_api_version) || return 1; fi
 cat > "$COMPOSE_CANDIDATE" << 'COMPOSE_EOF'
-# 容器日志限制由 /etc/docker/daemon.json 全局配置，无需逐服务设置
+# ������־������ /etc/docker/daemon.json ȫ�����ã��������������
+name: __STACK_PROJECT_NAME__
 x-vps-labels: &vps-labels
   com.centurylinklabs.watchtower.enable: "true"
   com.centurylinklabs.watchtower.scope: "vps-init"
+x-vps-healthcheck: &vps-healthcheck
+  interval: 30s
+  timeout: 10s
+  retries: 3
+  start_period: 60s
 services:
 
-  # ==================== 网络与证书管理 ====================
+  # ==================== ������֤����� ====================
   nginx-proxy-manager:
     labels: *vps-labels
     image: jc21/nginx-proxy-manager:latest
@@ -1520,7 +1578,10 @@ services:
     volumes:
       - ./npm/data:/data
       - ./npm/letsencrypt:/etc/letsencrypt
-  # ==================== 自动化更新 ====================
+    healthcheck:
+      <<: *vps-healthcheck
+      test: ['CMD', '/usr/bin/check-health']
+  # ==================== �Զ������� ====================
   watchtower:
     labels: *vps-labels
     image: containrrr/watchtower:1.7.1
@@ -1536,7 +1597,10 @@ services:
       - DOCKER_API_VERSION=__WATCHTOWER_API__
       - WATCHTOWER_LABEL_ENABLE=true
       - WATCHTOWER_SCOPE=vps-init
-  # ==================== 个人导航与工具 ====================
+    # �������� /watchtower --health-check��ֻ�����������̴�
+    healthcheck:
+      <<: *vps-healthcheck
+  # ==================== ���˵����빤�� ====================
   homepage:
     labels: *vps-labels
     image: ghcr.io/gethomepage/homepage:latest
@@ -1547,6 +1611,9 @@ services:
       - ./homepage:/app/config
     environment:
       - HOMEPAGE_ALLOWED_HOSTS=__HOMEPAGE_HOST__
+    # ���þ������õ� /api/healthcheck ��顣
+    healthcheck:
+      <<: *vps-healthcheck
 
   it-tools:
     labels: *vps-labels
@@ -1554,8 +1621,11 @@ services:
     container_name: it-tools
     restart: unless-stopped
     profiles: ["tools"]
+    healthcheck:
+      <<: *vps-healthcheck
+      test: ['CMD', 'wget', '-q', '--spider', '-T', '5', 'http://127.0.0.1/']
 
-  # ==================== 代码托管 ====================
+  # ==================== �����й� ====================
   gitea:
     labels: *vps-labels
     image: gitea/gitea:latest
@@ -1570,7 +1640,11 @@ services:
     volumes:
       - ./gitea/data:/data
       - /etc/localtime:/etc/localtime:ro
-  # ==================== 媒体与下载 ====================
+    healthcheck:
+      <<: *vps-healthcheck
+      test: ['CMD', 'curl', '-fsS', '--max-time', '5', '-o', '/dev/null', 'http://127.0.0.1:3000/api/healthz']
+      start_period: 120s
+  # ==================== ý�������� ====================
   navidrome:
     labels: *vps-labels
     image: deluan/navidrome:latest
@@ -1579,7 +1653,10 @@ services:
     profiles: ["media"]
     volumes:
       - ./navidrome/data:/data
-      - /Music:/music:ro
+      - ./Music:/music:ro
+    healthcheck:
+      <<: *vps-healthcheck
+      test: ['CMD', 'curl', '-fsS', '--max-time', '5', '-o', '/dev/null', 'http://127.0.0.1:4533/ping']
 
   metube:
     labels: *vps-labels
@@ -1589,8 +1666,11 @@ services:
     profiles: ["media"]
     volumes:
       - ./metube/downloads:/downloads
+    # ���þ������ü�飬������ HTTP(S) ���á�
+    healthcheck:
+      <<: *vps-healthcheck
 
-  # ==================== RSS 系统 ====================
+  # ==================== RSS ϵͳ ====================
   rsshub:
     labels: *vps-labels
     image: diygod/rsshub:latest
@@ -1603,17 +1683,17 @@ services:
       REDIS_URL: 'redis://redis:6379/'
       PUPPETEER_WS_ENDPOINT: 'ws://browserless:3000?token=${BROWSERLESS_TOKEN:?BROWSERLESS_TOKEN is required}'
     healthcheck:
-      test: ['CMD', 'curl', '-f', 'http://localhost:1200/healthz']
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      <<: *vps-healthcheck
+      test: ['CMD', 'curl', '-fsS', '--max-time', '5', '-o', '/dev/null', 'http://127.0.0.1:1200/healthz']
     depends_on:
-      - redis
-      - browserless
+      redis:
+        condition: service_healthy
+      browserless:
+        condition: service_healthy
 
   browserless:
     labels: *vps-labels
-    # browserless/chrome (v1) 已停止维护，改用 v2 chromium 镜像
+    # browserless/chrome (v1) ��ֹͣά�������� v2 chromium ����
     image: ghcr.io/browserless/chromium:latest
     container_name: browserless
     restart: always
@@ -1621,8 +1701,12 @@ services:
     mem_limit: 768m
     cpus: "1.0"
     environment:
-      # 与 RSSHub 共享部署时生成的随机令牌（仅容器内网使用）
+      # �� RSSHub ��������ʱ���ɵ�������ƣ�����������ʹ�ã�
       - TOKEN=${BROWSERLESS_TOKEN:?BROWSERLESS_TOKEN is required}
+    healthcheck:
+      <<: *vps-healthcheck
+      # $$ ���������� Shell չ�������������� TOKEN��
+      test: ['CMD-SHELL', 'curl -fsS --max-time 5 -o /dev/null "http://127.0.0.1:3000/pressure?token=$$TOKEN"']
     ulimits:
       core:
         hard: 0
@@ -1643,19 +1727,20 @@ services:
       retries: 5
       start_period: 5s
 
-  # ==================== 文件管理 ====================
+  # ==================== �ļ����� ====================
   filebrowser:
     labels: *vps-labels
     image: filebrowser/filebrowser:latest
     container_name: filebrowser
     profiles: ["files"]
-    # 需要管理宿主机 /root；不放宽 /root 的文件权限。
+    # ��Ҫ���������� /root�����ſ� /root ���ļ�Ȩ�ޡ�
     user: "0:0"
     volumes:
       - /root:/srv
       - ./Filebrowser/database:/database
       - ./Filebrowser/config:/config
     restart: unless-stopped
+    # ���þ������� /healthcheck.sh���������������
 
   openlist:
     labels: *vps-labels
@@ -1665,10 +1750,13 @@ services:
     user: "0:0"
     restart: unless-stopped
     volumes:
-      - /OpenList:/opt/openlist/data
+      - ./OpenList:/opt/openlist/data
     environment:
       - UMASK=022
-  # ==================== 监控系统 ====================
+    healthcheck:
+      <<: *vps-healthcheck
+      test: ['CMD-SHELL', 'test "$$(wget -q -O - -T 5 http://127.0.0.1:5244/ping)" = pong']
+  # ==================== ���ϵͳ ====================
   uptime-kuma:
     labels: *vps-labels
     image: louislam/uptime-kuma:latest
@@ -1677,6 +1765,7 @@ services:
     profiles: ["monitoring"]
     volumes:
       - ./uptime-kuma/data:/app/data
+    # ���þ������ý�����鼰�����ݿ��ʼ�������ڡ�
   beszel:
     labels: *vps-labels
     image: henrygd/beszel:latest
@@ -1687,10 +1776,14 @@ services:
       - APP_URL=http://localhost:8090
     volumes:
       - ./beszel/data:/beszel_data
-  # ==================== 笔记系统 ====================
+    healthcheck:
+      <<: *vps-healthcheck
+      test: ['CMD', '/beszel', 'health', '--url', 'http://localhost:8090']
+      interval: 120s
+  # ==================== �ʼ�ϵͳ ====================
   memos:
     image: __MEMOS_IMAGE__
-    # 数据库迁移需要备份和人工核对版本路径，不交给 Watchtower 自动升级。
+    # ���ݿ�Ǩ����Ҫ���ݺ��˹��˶԰汾·���������� Watchtower �Զ�������
     labels:
       com.centurylinklabs.watchtower.enable: "false"
     container_name: memos
@@ -1698,21 +1791,27 @@ services:
     profiles: ["notes"]
     volumes:
       - ./memos/data:/var/opt/memos
+    healthcheck:
+      <<: *vps-healthcheck
+      test: ['CMD', 'wget', '-q', '-O', '/dev/null', '-T', '5', 'http://127.0.0.1:5230/healthz']
+      start_period: 120s
 volumes:
   redis-data:
+    name: __STACK_REDIS_VOLUME_NAME__
 
 networks:
   default:
     driver: bridge
 COMPOSE_EOF
 
-# 域名已通过严格校验，可安全替换占位符
+# ������ͨ���ϸ�У�飬�ɰ�ȫ�滻ռλ��
 sed -i "s|__HOMEPAGE_HOST__|${HOMEPAGE_HOST}|g" "$COMPOSE_CANDIDATE"
 sed -i "s|__WATCHTOWER_API__|${watchtower_api}|g; s|__MEMOS_IMAGE__|${MEMOS_IMAGE:-neosmemo/memos:0.31.0}|g" "$COMPOSE_CANDIDATE"
+sed -i "s|__STACK_PROJECT_NAME__|${STACK_PROJECT_NAME}|g; s|__STACK_REDIS_VOLUME_NAME__|${STACK_REDIS_VOLUME_NAME}|g" "$COMPOSE_CANDIDATE"
 
 if ! docker compose --env-file "$BROWSERLESS_ENV_FILE" --project-directory "$STACK_DIR" -f "$COMPOSE_CANDIDATE" "${COMPOSE_PROFILE_ARGS[@]}" config -q; then
     rm -f -- "$COMPOSE_CANDIDATE"
-    error "docker-compose.yml 校验失败，保留原文件，未拉取镜像或启动服务"
+    error "docker-compose.yml У��ʧ�ܣ�����ԭ�ļ���δ��ȡ�������������"
     exit 1
 fi
 prepare_filebrowser_storage || { rm -f -- "$COMPOSE_CANDIDATE"; return 1; }
@@ -1726,28 +1825,28 @@ if ! cmp -s -- "$COMPOSE_CANDIDATE" "$COMPOSE_TARGET"; then
     compose_changed=1
 else
     rm -f -- "$COMPOSE_CANDIDATE"
-    info 'Compose 内容未变化，跳过备份和替换'
+    info 'Compose ����δ�仯���������ݺ��滻'
 fi
 if ! start_selected_services 0; then
     if (( compose_changed )); then
         if [[ -n "$compose_backup" ]]; then
             cp -a -- "$compose_backup" "$COMPOSE_TARGET" || return 1
-            error '部署失败，已恢复原 Compose，尝试恢复原服务配置'
+            error '����ʧ�ܣ��ѻָ�ԭ Compose�����Իָ�ԭ��������'
             if docker compose "${COMPOSE_ENV_ARGS[@]}" "${COMPOSE_PROFILE_ARGS[@]}" up -d && wait_selected_services; then
-                info '原 Compose 对应的服务已恢复并通过启动检查'
+                info 'ԭ Compose ��Ӧ�ķ����ѻָ���ͨ���������'
             else
-                error '原 Compose 已恢复，但服务恢复未通过，请检查容器状态'
+                error 'ԭ Compose �ѻָ���������ָ�δͨ������������״̬'
             fi
         else
             rm -f -- "$COMPOSE_TARGET"
-            error '首次部署失败，已撤回本次 Compose 文件；保留容器供排查'
+            error '�״β���ʧ�ܣ��ѳ��ر��� Compose �ļ��������������Ų�'
         fi
     fi
     return 1
 fi
-info '所选服务已通过启动检查'
+info '��ѡ������ͨ���������'
 
-# File Browser 的随机管理员密码只在首次初始化日志中出现一次
+# File Browser ���������Ա����ֻ���״γ�ʼ����־�г���һ��
 if [[ -n "${ENABLED_PROFILES[files]+x}" ]]; then
     FILEBROWSER_PASSWORD_LINE=""
     for _ in {1..15}; do
@@ -1760,35 +1859,35 @@ if [[ -n "${ENABLED_PROFILES[files]+x}" ]]; then
 
     if [[ -n "${FILEBROWSER_PASSWORD_LINE}" ]]; then
         echo ""
-        info "File Browser 首次管理员密码（用户 admin，请立即保存并修改）："
+        info "File Browser �״ι���Ա���루�û� admin�����������沢�޸ģ���"
         echo "  ${FILEBROWSER_PASSWORD_LINE}"
     else
-        warn "未在日志中找到 File Browser 首次密码（已有数据库时不会再次生成）"
-        warn "如为首次部署，请检查: cd ${STACK_DIR} && docker compose --env-file .browserless.env logs filebrowser"
+        warn "δ����־���ҵ� File Browser �״����루�������ݿ�ʱ�����ٴ����ɣ�"
+        warn "��Ϊ�״β�������: cd ${STACK_DIR} && docker compose --env-file .browserless.env logs filebrowser"
     fi
 fi
 
 echo ""
-step "部署完成"
+step "�������"
 
 echo ""
-info "所有配置已完成，以下为当前状态："
+info "������������ɣ�����Ϊ��ǰ״̬��"
 echo ""
-echo "  主机名:          $(hostname)"
+echo "  ������:          $(hostname)"
 echo "  Docker:          $(docker --version 2>/dev/null | awk '{print $3}' | tr -d ',')"
 echo "  Compose:         $(docker compose version --short 2>/dev/null)"
-echo "  自动安全更新:    $(systemctl is-active unattended-upgrades 2>/dev/null)"
-echo "  journal 上限:    $(grep -oP 'SystemMaxUse=\K.*' /etc/systemd/journald.conf.d/limit.conf 2>/dev/null || echo '未设置')"
-echo "  工作目录:        ${STACK_DIR}"
+echo "  �Զ���ȫ����:    $(systemctl is-active unattended-upgrades 2>/dev/null)"
+echo "  journal ����:    $(grep -oP 'SystemMaxUse=\K.*' /etc/systemd/journald.conf.d/limit.conf 2>/dev/null || echo 'δ����')"
+echo "  ����Ŀ¼:        ${STACK_DIR}"
 echo ""
 
-echo -e "${CYAN}====== 部署后待办 ======${NC}"
+echo -e "${CYAN}====== �������� ======${NC}"
 echo ""
 echo "  1. Nginx Proxy Manager"
-echo "     访问 http://<服务器IP>:81"
-echo "     首次登录凭据请查所用镜像版本说明，登录后立即修改"
+echo "     ���� http://<������IP>:81"
+echo "     �״ε�¼ƾ��������þ���汾˵������¼�������޸�"
 echo ""
-echo "  2. 各服务默认端口（通过 NPM 反向代理访问）"
+echo "  2. ������Ĭ�϶˿ڣ�ͨ�� NPM ����������ʣ�"
 echo "     Homepage:      3000    OpenList:       5244"
 echo "     IT-Tools:      80      File Browser:   80"
 echo "     Gitea:         3000    Uptime Kuma:    3001"
@@ -1796,10 +1895,10 @@ echo "     Navidrome:     4533    Beszel Hub:     8090"
 echo "     Metube:        8081    Memos:          5230"
 echo "     RSSHub:        1200"
 echo ""
-echo "  3. ghcr.io 镜像拉取失败？"
-echo "     如 homepage / it-tools / metube 拉取超时，可手动配置 ghcr.io 代理"
-echo "     请配置 Docker daemon 的 HTTP(S) 网络代理，或显式改用可信的镜像仓库地址"
-echo "     daemon.json 的 registry-mirrors 仅适用于 Docker Hub，不会透明代理 ghcr.io"
+echo "  3. ghcr.io ������ȡʧ�ܣ�"
+echo "     �� homepage / it-tools / metube ��ȡ��ʱ�����ֶ����� ghcr.io ����"
+echo "     ������ Docker daemon �� HTTP(S) �������������ʽ���ÿ��ŵľ���ֿ��ַ"
+echo "     daemon.json �� registry-mirrors �������� Docker Hub������͸������ ghcr.io"
 echo ""
 }
 
@@ -1812,7 +1911,7 @@ read_root_crontab() {
             ROOT_CRONTAB_CONTENT=''
         else
             rm -f -- "$errors"
-            error '无法读取现有 crontab，停止修改以保护原有任务'
+            error '�޷���ȡ���� crontab��ֹͣ�޸��Ա���ԭ������'
             return 1
         fi
     fi
@@ -1824,10 +1923,10 @@ backup_root_crontab() {
     install -d -m 0700 /var/backups/vps-init || return 1
     backup=$(mktemp /var/backups/vps-init/crontab.XXXXXXXX) || return 1
     printf '%s\n' "$1" > "$backup" || return 1
-    info "修改前的 crontab 已保存至 $backup"
+    info "�޸�ǰ�� crontab �ѱ����� $backup"
 }
 
-# 参数 1 输出本脚本的任务，0 输出应保留的其他行；读状态与修改共用规则。
+# ���� 1 ������ű�������0 ���Ӧ�����������У���״̬���޸Ĺ��ù���
 filter_sb_update_cron() {
     awk -v managed_only="$1" '
         {
@@ -1850,7 +1949,7 @@ set_sb_update_cron() {
         backup_root_crontab "$previous" || return 1
         printf '%s\n' "$desired" | crontab - || return 1
     else
-        info 'sing-box 定时任务未变化，跳过写入'
+        info 'sing-box ��ʱ����δ�仯������д��'
     fi
 }
 
@@ -1873,13 +1972,13 @@ apply_background_actions() {
 
 setup_existing_stack() {
     BROWSERLESS_ENV_FILE="$STACK_DIR/.browserless.env"
-    [[ -f "$STACK_DIR/docker-compose.yml" && -f "$BROWSERLESS_ENV_FILE" ]] || { error '未找到已有 Compose 或令牌文件，请先初始化/安装组件'; return 1; }
-    if [[ $(wc -l < "$BROWSERLESS_ENV_FILE") -ne 1 ]] || ! grep -qxE 'BROWSERLESS_TOKEN=[0-9a-f]{64}' "$BROWSERLESS_ENV_FILE"; then error '已有令牌文件格式无效'; return 1; fi
+    [[ -f "$STACK_DIR/docker-compose.yml" && -f "$BROWSERLESS_ENV_FILE" ]] || { error 'δ�ҵ����� Compose �������ļ������ȳ�ʼ��/��װ���'; return 1; }
+    if [[ $(wc -l < "$BROWSERLESS_ENV_FILE") -ne 1 ]] || ! grep -qxE 'BROWSERLESS_TOKEN=[0-9a-f]{64}' "$BROWSERLESS_ENV_FILE"; then error '���������ļ���ʽ��Ч'; return 1; fi
     unset BROWSERLESS_TOKEN
     COMPOSE_ENV_ARGS=(--env-file "$BROWSERLESS_ENV_FILE" -f "$STACK_DIR/docker-compose.yml")
 }
 
-# Compose 的 JSON 输出兼容数组或逐行对象；按 Service 字段逐一核对所选服务。
+# Compose �� JSON ���������������ж��󣻰� Service �ֶ���һ�˶���ѡ����
 check_service_snapshot() {
     python3 -c '
 import json,sys
@@ -1893,19 +1992,19 @@ try:
         text=text[end:].lstrip()
     if any(not isinstance(item,dict) for item in rows): raise ValueError()
 except (ValueError,TypeError):
-    print("无法解析容器状态 JSON",file=sys.stderr)
+    print("�޷���������״̬ JSON",file=sys.stderr)
     sys.exit(2)
 failed=False
 for service in sys.argv[1:]:
     containers=[row for row in rows if row.get("Service")==service]
     if not containers:
-        print(service+": 缺少容器")
+        print(service+": ȱ������")
         failed=True
     for row in containers:
         state=row.get("State","")
         health=row.get("Health","") or ""
-        ready=state=="running" and health in ("","healthy")
-        print(service+": "+state+" / "+(health or "未配置健康检查，仅确认进程运行"))
+        ready=state=="running" and health=="healthy"
+        print(service+": "+state+" / "+(health or "ȱ�ٽ�����飬δͨ�����գ��������ģʽ������������"))
         failed=failed or not ready
 sys.exit(1 if failed else 0)
 ' "$@"
@@ -1914,22 +2013,22 @@ sys.exit(1 if failed else 0)
 wait_selected_services() {
     local timeout=${1:-$SERVICE_WAIT_TIMEOUT} configured snapshot report deadline result
     local -a expected=()
-    configured=$(docker compose "${COMPOSE_ENV_ARGS[@]}" "${COMPOSE_PROFILE_ARGS[@]}" config --services) || { error '无法解析所选服务清单'; return 1; }
-    [[ -n "$configured" ]] || { error '所选服务清单为空'; return 1; }
+    configured=$(docker compose "${COMPOSE_ENV_ARGS[@]}" "${COMPOSE_PROFILE_ARGS[@]}" config --services) || { error '�޷�������ѡ�����嵥'; return 1; }
+    [[ -n "$configured" ]] || { error '��ѡ�����嵥Ϊ��'; return 1; }
     mapfile -t expected <<< "$configured"
     deadline=$((SECONDS + timeout))
     while true; do
-        snapshot=$(docker compose "${COMPOSE_ENV_ARGS[@]}" "${COMPOSE_PROFILE_ARGS[@]}" ps --all --format json) || { error '读取容器状态失败'; return 1; }
+        snapshot=$(docker compose "${COMPOSE_ENV_ARGS[@]}" "${COMPOSE_PROFILE_ARGS[@]}" ps --all --format json) || { error '��ȡ����״̬ʧ��'; return 1; }
         if report=$(check_service_snapshot "${expected[@]}" <<< "$snapshot"); then
             printf '%s\n' "$report"
             return 0
         else
             result=$?
         fi
-        if (( result > 1 )); then error '容器状态无法解析或检查工具不可用'; return 1; fi
+        if (( result > 1 )); then error '����״̬�޷��������鹤�߲�����'; return 1; fi
         if (( SECONDS >= deadline )); then
             printf '%s\n' "$report" >&2
-            error '所选服务尚未全部就绪，或容器状态无效'
+            error '��ѡ������δȫ���ﵽ running + healthy��������״̬��Ч'
             return 1
         fi
         sleep 2
@@ -1939,10 +2038,10 @@ wait_selected_services() {
 start_selected_services() {
     local update=$1
     if [[ "$update" == 1 ]]; then
-        docker compose "${COMPOSE_ENV_ARGS[@]}" "${COMPOSE_PROFILE_ARGS[@]}" pull || { error '镜像更新失败，未执行启动'; return 1; }
+        docker compose "${COMPOSE_ENV_ARGS[@]}" "${COMPOSE_PROFILE_ARGS[@]}" pull || { error '�������ʧ�ܣ�δִ������'; return 1; }
     fi
-    # 普通安装只补齐缺失镜像；不主动替换已有镜像。
-    docker compose "${COMPOSE_ENV_ARGS[@]}" "${COMPOSE_PROFILE_ARGS[@]}" up -d || { error 'Compose 启动失败'; return 1; }
+    # ��ͨ��װֻ����ȱʧ���񣻲������滻���о���
+    docker compose "${COMPOSE_ENV_ARGS[@]}" "${COMPOSE_PROFILE_ARGS[@]}" up -d || { error 'Compose ����ʧ��'; return 1; }
     if [[ "$WATCHTOWER_ACTION" == 2 ]]; then
         docker compose "${COMPOSE_ENV_ARGS[@]}" --profile watchtower stop watchtower || return 1
     fi
@@ -1957,12 +2056,12 @@ show_status() {
         local service state
         for service in fail2ban iperf3-server.service cron; do
             state=$(systemctl is-active "$service" 2>/dev/null || true)
-            info "$service: ${state:-未安装}"
+            info "$service: ${state:-δ��װ}"
         done
-        info "拥塞控制：$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo '由宿主机管理')"
+        info "ӵ�����ƣ�$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo '������������')"
         if command -v crontab >/dev/null 2>&1; then
             read_root_crontab || return 1
-            if [[ -n "$(filter_sb_update_cron 1 <<< "$ROOT_CRONTAB_CONTENT")" ]]; then info 'sing-box 定时更新：已配置'; else info 'sing-box 定时更新：未配置'; fi
+            if [[ -n "$(filter_sb_update_cron 1 <<< "$ROOT_CRONTAB_CONTENT")" ]]; then info 'sing-box ��ʱ���£�������'; else info 'sing-box ��ʱ���£�δ����'; fi
         fi
     fi
 }
@@ -1973,17 +2072,17 @@ update_selected() {
         start_selected_services 1
     else
         if [[ "$INSTALL_NEXTTRACE" == 1 ]]; then
-            if ! command -v nexttrace >/dev/null 2>&1 && ! command -v nxtrace >/dev/null 2>&1; then error 'NextTrace 未安装，请使用组件安装模式'; return 1; fi
+            if ! command -v nexttrace >/dev/null 2>&1 && ! command -v nxtrace >/dev/null 2>&1; then error 'NextTrace δ��װ����ʹ�������װģʽ'; return 1; fi
             run_installer https://nxtrace.org/nt || return 1
         fi
         if [[ "$INSTALL_SING_BOX" == 1 ]]; then
-            [[ -x /usr/local/bin/sb ]] || { error '未找到 sb 管理脚本，请先安装'; return 1; }
+            [[ -x /usr/local/bin/sb ]] || { error 'δ�ҵ� sb �����ű������Ȱ�װ'; return 1; }
             update_singbox || return 1
         fi
     fi
 }
 
-# 第三方安装程序先完整下载并检查 Bash 语法，下载失败不得执行部分内容。
+# ��������װ�������������ز���� Bash �﷨������ʧ�ܲ���ִ�в������ݡ�
 run_installer() (
     local installer tty_fd
     installer=$(mktemp)
@@ -1999,48 +2098,53 @@ run_installer() (
 
 show_help() {
     cat <<'HELP'
-用法：bash vps-init.sh [--plan | --help]
-  --plan  显示本机概况、选择并打印方案，不安装软件或修改系统；可在普通用户下执行。
-  --help  显示帮助。
-启动顺序：本机系统概况 → 选择操作 → 选择用途 / 线路 → 选择工具 / 服务组 → 后台任务 → 执行方案。
-系统概况只读取本机信息，不联网探测；正式执行前校验系统版本、root 权限及 systemd。
-操作（VPS_MODE，保留原编号）：
-  1) full：完整初始化，适合新机器（回车默认选择）
-  2) components：安装 / 调整组件，适合补装工具、部署服务、调整后台任务
-  3) status：查看运行状态（只读）
-  4) update：更新已有组件 / 服务，复用当前配置
-  0) 退出
-场景（VPS_SCENE）：
-  1) hk / jp：HK / JP 精品线路
-  2) la：LA 高延迟线路
-  3) de：DE / 法兰克福线路
-  4) minimal：精简基础版
-  5) domestic：Docker 自托管服务（原国内场景，国内外 VPS 均可选）
-  0) 退出
-只有完整初始化才应用场景中的系统 / TCP 配置；其他操作仅以场景确定组件范围。
-境外组件（VPS_COMPONENTS）：
-  1) NextTrace + sing-box（直接回车默认选择）
-  2) 仅 NextTrace
-  3) 仅 sing-box
-  0) 不选择
-后台选项（IPERF3_ACTION / WATCHTOWER_ACTION / SB_UPDATE_ACTION）：
-  1) 启用（安装模式中适用的任务默认选择）
-  2) 新任务不启用；已有任务停用
-  0) 保持现状（已有任务时显示，也接受显式环境变量）
-新装时菜单只显示上述前两项；检查/更新模式不显示后台菜单，ACTION 默认保持为 0。
-Docker 服务组（SERVICE_PROFILES，支持逗号多选，也接受对应 profile 名称）：
-  1) tools：导航与工具（Homepage + IT-Tools）
-  2) code：代码托管（Gitea）
-  3) media：音乐与下载（Navidrome + MeTube）
-  4) rss：RSS 订阅（RSSHub + Browserless + Redis）
-  5) files：文件管理（File Browser + OpenList）
-  6) monitoring：服务监控（Uptime Kuma + Beszel）
-  7) notes：笔记备忘（Memos）
-  8) all：全部服务组
-  0) none：仅基础服务 NPM（默认，反向代理与证书管理）
-例如 1,4,6；0 和 8 需单独使用。后台任务单独选择，未选择的已有服务不会被卸载。
-其他变量：VPS_HOSTNAME、UPGRADE_SYSTEM、INSTALL_STARSHIP、RESET_STARSHIP_CONFIG、
-          IPERF3_PORT、HOMEPAGE_HOST、MEMOS_IMAGE、STACK_DIR、DOCKER_MIRRORS、SERVICE_WAIT_TIMEOUT。
+�÷���bash vps-init.sh [--plan | --help]
+  --plan  ��ʾ�����ſ���ѡ�񲢴�ӡ����������װ�������޸�ϵͳ��������ͨ�û���ִ�С�
+  --help  ��ʾ������
+����˳�򣺱���ϵͳ�ſ� �� ѡ����� �� ѡ����; / ��· �� ѡ�񹤾� / ������ �� ��̨���� �� ִ�з�����
+ϵͳ�ſ�ֻ��ȡ������Ϣ��������̽�⣻��ʽִ��ǰУ��ϵͳ�汾��root Ȩ�޼� systemd��
+������VPS_MODE������ԭ��ţ���
+  1) full��������ʼ�����ʺ��»������س�Ĭ��ѡ��
+  2) components����װ / ����������ʺϲ�װ���ߡ�������񡢵�����̨����
+  3) status���鿴����״̬��ֻ����
+  4) update������������� / ���񣬸��õ�ǰ����
+  0) �˳�
+������VPS_SCENE����
+  1) hk / jp��HK / JP ��Ʒ��·
+  2) la��LA ���ӳ���·
+  3) de��DE / �����˸���·
+  4) minimal�����������
+  5) domestic��Docker ���йܷ���ԭ���ڳ����������� VPS ����ѡ��
+  0) �˳�
+ֻ��������ʼ����Ӧ�ó����е�ϵͳ / TCP ���ã������������Գ���ȷ�������Χ��
+���������VPS_COMPONENTS����
+  1) NextTrace + sing-box��ֱ�ӻس�Ĭ��ѡ��
+  2) �� NextTrace
+  3) �� sing-box
+  0) ��ѡ��
+��̨ѡ�IPERF3_ACTION / WATCHTOWER_ACTION / SB_UPDATE_ACTION����
+  1) ���ã���װģʽ�����õ�����Ĭ��ѡ��
+  2) ���������ã���������ͣ��
+  0) ������״����������ʱ��ʾ��Ҳ������ʽ����������
+��װʱ�˵�ֻ��ʾ����ǰ������/����ģʽ����ʾ��̨�˵���ACTION Ĭ�ϱ���Ϊ 0��
+Docker �����飨SERVICE_PROFILES��֧�ֶ��Ŷ�ѡ��Ҳ���ܶ�Ӧ profile ���ƣ���
+  1) tools�������빤�ߣ�Homepage + IT-Tools��
+  2) code�������йܣ�Gitea��
+  3) media�����������أ�Navidrome + MeTube��
+  4) rss��RSS ���ģ�RSSHub + Browserless + Redis��
+  5) files���ļ�������File Browser + OpenList��
+  6) monitoring�������أ�Uptime Kuma + Beszel��
+  7) notes���ʼǱ�����Memos��
+  8) all��ȫ��������
+  0) none������������ NPM��Ĭ�ϣ����������֤�������
+���� 1,4,6��0 �� 8 �赥��ʹ�á���̨���񵥶�ѡ��δѡ������з��񲻻ᱻж�ء�
+����������VPS_HOSTNAME��UPGRADE_SYSTEM��INSTALL_STARSHIP��RESET_STARSHIP_CONFIG��
+          IPERF3_PORT��HOMEPAGE_HOST��MEMOS_IMAGE��STACK_DIR��COMPOSE_PROJECT_NAME��DOCKER_MIRRORS��SERVICE_WAIT_TIMEOUT��
+Docker Ĭ��Ŀ¼��/root��Compose Ϊ /root/docker-compose.yml��Ӧ�����ݾ�λ�ڸ�Ŀ¼�¡�
+File Browser �̶����� /root��Redis ���������������в�������ԭ��Ŀ����ʵ�� Redis ������
+��ѡ�еķ���ȫ���ﵽ running + healthy ��ͨ�����գ�Ӧ���¹��ؼ����������ѡ���ģʽ��
+�ɲ�������ͣ�������ݲ�Ǩ�� Compose��������Ӧ�����ݣ��ű������Զ���Ǩ�ļ���
+���Զ�����Ŀ��������ɾ����Ǩ��ʱ����ͨ�� COMPOSE_PROJECT_NAME ָ��ԭ��Ŀ����
 HELP
 }
 
@@ -2050,12 +2154,12 @@ main() {
         --help|-h) show_help; return 0 ;;
         --plan) plan_only=1 ;;
         '') ;;
-        *) die '未知参数，使用 --help 查看用法' ;;
+        *) die 'δ֪������ʹ�� --help �鿴�÷�' ;;
     esac
-    (( $# <= 1 )) || die '参数过多，使用 --help 查看用法'
+    (( $# <= 1 )) || die '�������࣬ʹ�� --help �鿴�÷�'
     print_system_overview
     if (( plan_only == 1 )); then
-        info '当前为方案预览：只读取本机信息和打印选择，不安装软件或修改系统。'
+        info '��ǰΪ����Ԥ����ֻ��ȡ������Ϣ�ʹ�ӡѡ�񣬲���װ�������޸�ϵͳ��'
     fi
     select_mode
     select_scene
@@ -2079,10 +2183,10 @@ main() {
     if [[ "$VPS_MODE" == full || "$VPS_SCENE" == domestic || "$INSTALL_NEXTTRACE" == 1 || "$INSTALL_SING_BOX" == 1 || "$IPERF3_ACTION" == 1 || "$SB_UPDATE_ACTION" == 1 ]]; then
         install_base
     else
-        info '没有需要安装的组件，仅处理所选后台任务，跳过 APT'
+        info 'û����Ҫ��װ���������������ѡ��̨�������� APT'
     fi
     if [[ "$VPS_MODE" == full ]]; then
-        step '终端美化：Starship（Bash）'
+        step '�ն�������Starship��Bash��'
         configure_starship
         configure_security
     fi
@@ -2097,14 +2201,14 @@ main() {
         if [[ "$INSTALL_NEXTTRACE" == 1 ]]; then install_nexttrace; fi
         if [[ "$INSTALL_SING_BOX" == 1 ]]; then install_singbox; fi
         apply_background_actions
-        step '初始化完成'
-        info "场景：$SCENE_NAME；拥塞控制：$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo '由宿主机管理')"
-        info "iperf3：$(systemctl is-active iperf3-server.service 2>/dev/null || true)；fail2ban：$(systemctl is-active fail2ban 2>/dev/null || true)"
-        info '建议维护窗口内重启一次：reboot；Starship 重新连接 SSH 后生效。'
+        step '��ʼ�����'
+        info "������$SCENE_NAME��ӵ�����ƣ�$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo '������������')"
+        info "iperf3��$(systemctl is-active iperf3-server.service 2>/dev/null || true)��fail2ban��$(systemctl is-active fail2ban 2>/dev/null || true)"
+        info '����ά������������һ�Σ�reboot��Starship �������� SSH ����Ч��'
     fi
 }
 
-# 被隔离测试 source 时只加载函数；正常执行（含 bash <(curl ...)）才进入 main。
+# ��������� source ʱֻ���غ���������ִ�У��� bash <(curl ...)���Ž��� main��
 if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then
     main "$@"
 fi
