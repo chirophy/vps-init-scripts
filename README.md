@@ -37,7 +37,7 @@ bash vps-init.sh --help
 
 ## Docker 服务
 
-选择场景 `5` 后按需多选服务组，例如 `1,4,6`。NPM 始终包含，Watchtower 自动更新单独选择。
+选择场景 `5` 后按需多选服务组，例如 `1,4,6,9`。NPM 与 PostgreSQL 始终包含，Watchtower 自动更新单独选择。
 
 | 序号 | 服务 |
 | --- | --- |
@@ -46,17 +46,33 @@ bash vps-init.sh --help
 | 3 | Navidrome、MeTube |
 | 4 | RSSHub、Browserless、Redis |
 | 5 | File Browser、OpenList |
-| 6 | Uptime Kuma、Beszel |
+| 6 | Uptime Kuma、Beszel、Komari |
 | 7 | Memos |
 | 8 | 全部可选服务 |
-| 0 | 仅 NPM（默认） |
+| 9 | pgAdmin（PostgreSQL 管理） |
+| 0 | 仅 NPM、PostgreSQL（默认） |
 
-- Compose 默认位于 `/root/docker-compose.yml`，应用绑定目录统一放在 `/root` 下，可通过 `STACK_DIR` 调整。
+- Compose 默认位于 `/root/docker-compose.yml`，应用绑定目录统一放在 `/root` 下，可通过 `STACK_DIR` 调整；pgAdmin 与 Redis 使用 Docker 命名卷。
 - File Browser 固定管理 `/root`；音乐库默认 `/root/Music`，OpenList 应用数据默认 `/root/OpenList`；Redis 保留命名卷。
 - Browserless 共享令牌保存在 `/root/.browserless.env`（权限 `0600`）。手动运行 Compose 时须通过 `--env-file` 加载该文件，请勿上传。
+- 新部署的 NPM、Gitea、Memos、OpenList 共用 `postgresql:5432`，各用独立数据库和非管理员账号；Komari 的指标库也使用独立的 PostgreSQL 数据库，其账号和站点配置仍由 Komari 保存在本地 SQLite 中。RSSHub 继续使用 Redis；其他服务保留各自支持的存储方式。
+- PostgreSQL 固定为 `17-alpine`，不交给 Watchtower 自动升级；数据保存在 `postgresql/data`，初次启动自动建库，补装时只创建缺失的库和账号，不重置已有密码。5432 不发布到公网。
+- 数据库密码、pgAdmin 和 Komari 初始账号密码在部署时随机生成，保存在 `.database.env`（权限 `0600`），重跑复用。首次可通过 `POSTGRES_PASSWORD`、`NPM_DB_PASSWORD`、`GITEA_DB_PASSWORD`、`MEMOS_DB_PASSWORD`、`OPENLIST_DB_PASSWORD`、`KOMARI_DB_PASSWORD`、`PGADMIN_DEFAULT_PASSWORD`、`KOMARI_ADMIN_PASSWORD` 自行提供，限 16–128 位字母、数字、下划线或连字符；Komari 密码还须含大小写字母和数字。已有文件优先于环境变量，删除文件不会重置数据库密码。
+- pgAdmin 的邮箱通过 `PGADMIN_DEFAULT_EMAIL` 设置（首次默认 `admin@example.com`），登录密码见 `.database.env`，已预置 PostgreSQL 服务器地址；连接时使用文件中的 `POSTGRES_PASSWORD`。Komari 首次自动完成安装，用户名为 `admin`，密码见 `KOMARI_ADMIN_PASSWORD`。已有 Komari 实例保留原账号和指标库，不自动迁移。
+- 应用连接分别保存在 `.database-connections/{npm,gitea,memos,openlist}.env`（目录 `0700`、文件 `0600`）。首次接入脚本时，优先保留原 Compose 中的数据库环境变量；应用目录已有文件时保留原数据库，避免把 SQLite 或自定义连接切到空库。后续复用这些连接文件；切换数据库须另行备份和迁移，不能只删除连接文件。
+- pgAdmin、Komari 统一通过 NPM 访问，反代目标分别为 `pgadmin4:80`、`komari:25774`，沿用脚本原有的容器内网部署方式。
 - 所选服务全部达到 `running + healthy` 才通过验收，默认最多等待 300 秒，可通过 `SERVICE_WAIT_TIMEOUT` 调整。
 
-应用新的挂载或健康检查配置，请选择操作 `2`；操作 `4` 沿用已有 Compose。旧部署迁移前请停服并备份，手动迁移 Compose、令牌和应用数据；脚本不会自动搬迁文件。旧自定义项目在容器已删除后迁移时，通过 `COMPOSE_PROJECT_NAME` 指定原项目名。
+手动管理新部署时，同时加载两个凭据文件：
+
+```bash
+cd /root
+docker compose --env-file .browserless.env --env-file .database.env --profile database ps
+```
+
+对照用户提供的 Compose，补入 PostgreSQL、pgAdmin、Komari；未复制其中的私人目录、1Panel 容器名、外部网络和凭据。Gitea 沿用脚本原有社区版镜像，不自动换为参考文件中的企业版。数据库连接依据 [NPM](https://nginxproxymanager.com/setup/)、[Gitea](https://docs.gitea.com/installation/install-with-docker)、[Memos](https://usememos.com/docs/configuration/database)、[OpenList](https://doc.oplist.org/configuration/configuration) 官方说明；Komari 使用其 [1.6.0 首次安装接口](https://github.com/komari-monitor/komari/blob/1.6.0/web/install/install.go) 配置指标库。
+
+应用新的挂载、数据库连接或健康检查配置，请选择操作 `2`；操作 `4` 沿用已有 Compose。旧部署迁移前请停服并备份，手动迁移 Compose、令牌、`.database.env`、`.database-connections`、`postgresql/init` 和应用数据；脚本不会自动搬迁文件。旧自定义项目在容器已删除后迁移时，通过 `COMPOSE_PROJECT_NAME` 指定原项目名。
 
 ## 旧版执行方式
 

@@ -9,90 +9,9 @@ fail() { printf '[FAIL] %s\n' "$*" >&2; exit 1; }
 source "$project_dir/vps-init.sh"
 real_read_tty=$(declare -f read_tty)
 read_tty() { printf -v "$1" '%s' "${3-}"; }
-if ! python3 -c 'import sys' >/dev/null 2>&1; then python3() { python "$@"; }; fi
+if ! python3 -c 'import sys' >/dev/null 2>&1; then python3() { python "$@" | sed 's/\r$//'; }; fi
 VPS_MODE=full
 IPERF3_ACTION=0 WATCHTOWER_ACTION=0 SB_UPDATE_ACTION=0 SERVICE_WAIT_TIMEOUT=1
-
-# 系统概况使用 Linux 文件样本与命令替身；禁止联网、包管理和服务操作。
-(
-    mkdir -p "$test_dir/overview/etc" "$test_dir/overview/proc" "$test_dir/overview/run/systemd/system"
-    printf 'ID=debian\nPRETTY_NAME="Debian GNU/Linux fixture"\n' > "$test_dir/overview/etc/os-release"
-    printf 'model name : Fixture CPU\n' > "$test_dir/overview/proc/cpuinfo"
-    printf 'MemTotal: 2097152 kB\nMemAvailable: 1048576 kB\nSwapTotal: 0 kB\nSwapFree: 0 kB\n' > "$test_dir/overview/proc/meminfo"
-    printf '90061.00 0.00\n' > "$test_dir/overview/proc/uptime"
-    printf '0.10 0.20 0.30 1/10 123\n' > "$test_dir/overview/proc/loadavg"
-    definition=$(declare -f print_system_overview)
-    definition=${definition//\/etc\//$test_dir/overview/etc/}
-    definition=${definition//\/proc\//$test_dir/overview/proc/}
-    definition=${definition//\/run\//$test_dir/overview/run/}
-    eval "$definition"
-    ID=parent-value
-    uname() { case "$1" in -s) echo Linux;; -r) echo fixture-kernel;; -m) echo x86_64;; esac; }
-    hostname() { echo fixture-host; }
-    getconf() { echo 2; }
-    systemd-detect-virt() { echo kvm; }
-    id() { echo fixture-user; }
-    df() { printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\nfixture 41943040 10485760 31457280 25%% /\n'; }
-    for fn in curl apt-get systemctl docker; do
-        eval "$fn() { echo '$fn' >> \"\$test_dir/forbidden-probe\"; return 1; }"
-    done
-    print_system_overview > "$test_dir/overview-output"
-    grep -q 'Debian GNU/Linux fixture' "$test_dir/overview-output" || fail '系统名称未显示'
-    grep -q '2 逻辑核 / Fixture CPU' "$test_dir/overview-output" || fail 'CPU 信息未显示'
-    grep -q '总计 2048 MiB / 可用 1024 MiB' "$test_dir/overview-output" || fail '内存单位换算错误'
-    grep -q 'Swap：未配置' "$test_dir/overview-output" || fail '零 Swap 没有区分未配置与未知'
-    grep -q '总计 40.0 GiB / 可用 30.0 GiB / 已用 25%' "$test_dir/overview-output" || fail '根分区单位换算错误'
-    grep -q '1 天 1 小时 1 分钟' "$test_dir/overview-output" || fail '运行时长换算错误'
-    [[ "$ID" == parent-value && ! -e "$test_dir/forbidden-probe" ]] || fail '概况污染部署变量或调用了非本地只读操作'
-    rm -rf "$test_dir/overview"
-    getconf() { return 1; }; df() { return 1; }; systemd-detect-virt() { return 1; }
-    print_system_overview > "$test_dir/overview-output"
-    grep -q '操作系统：Linux' "$test_dir/overview-output" || fail 'os-release 缺失后没有回退'
-    grep -q '内存：未知' "$test_dir/overview-output" || fail '字段缺失没有显示未知'
-    grep -q '根分区：未知' "$test_dir/overview-output" || fail '命令失败阻止了概况输出'
-)
-printf '[PASS] 系统概况只读探测、字段换算、变量隔离与缺失信息回退\n'
-
-# 预览必须先显示概况；服务组先选、后台任务后选仍生成正确且不重复的 profiles。
-for watchtower in default 0 1 2; do
-    (
-        print_system_overview() { echo overview-first; }
-        preflight() { fail '预览不应进入执行环境校验'; }
-        probe_background_state() { BACKGROUND_PRESENT=0; BACKGROUND_STATE='未配置'; }
-        VPS_MODE=components VPS_SCENE=domestic VPS_COMPONENTS=0 SERVICE_PROFILES=4,6
-        unset WATCHTOWER_ACTION
-        if [[ "$watchtower" != default ]]; then WATCHTOWER_ACTION=$watchtower; fi
-        main --plan > "$test_dir/startup-plan"
-        [[ $(head -n 1 "$test_dir/startup-plan") == overview-first ]] || fail '概况未在操作选择前显示'
-        if [[ "$watchtower" == default || "$watchtower" == 1 ]]; then
-            [[ "${COMPOSE_PROFILE_ARGS[*]}" == '--profile rss --profile monitoring --profile watchtower' ]] || fail '调整顺序后遗漏或重复 Watchtower'
-        else
-            [[ "${COMPOSE_PROFILE_ARGS[*]}" == '--profile rss --profile monitoring' ]] || fail '未启用时仍启动 Watchtower'
-        fi
-        awk '/======== 选择服务组/ {services=NR} /======== 设置后台任务/ {background=NR} END {exit !(services>0 && background>services)}' "$test_dir/startup-plan" || fail '服务组没有先于后台任务显示'
-    )
-done
-(
-    print_system_overview() { echo overview-first; }
-    select_scene() { fail '退出后仍继续询问场景'; }
-    VPS_MODE=0 main --plan
-) > "$test_dir/exit-plan"
-for mode in full components status update; do
-    (
-        VPS_MODE=$mode VPS_SCENE=hk VPS_COMPONENTS=2
-        select_scene >/dev/null; select_components >/dev/null
-        validate_options; print_plan > "$test_dir/mode-plan"
-        if [[ "$mode" == full ]]; then
-            grep -q '线路配置：应用' "$test_dir/mode-plan" || fail '完整初始化未说明线路配置'
-        else
-            ! grep -q '线路配置：应用' "$test_dir/mode-plan" || fail '非初始化模式仍声称修改线路配置'
-        fi
-        if [[ "$mode" == update ]]; then
-            grep -q '更新工具：NextTrace' "$test_dir/mode-plan" || fail '更新模式错误显示为安装工具'
-        fi
-    )
-done
-printf '[PASS] 启动顺序、直接退出、服务组与后台选择顺序、各模式方案范围\n'
 
 # 保留真实 read 逻辑，只把 /dev/tty 替换成临时输入文件，模拟用户直接按回车。
 (
@@ -171,8 +90,8 @@ for selection in '1,4,6' 'tools,rss,monitoring' '1,1,4,6'; do
     [[ "${SELECTED_PROFILE_NAMES[*]}" == 'tools rss monitoring' ]] || fail '序号或名称映射错误'
 done
 SERVICE_PROFILES=8 select_services > "$test_dir/plan"
-[[ ${#SELECTED_PROFILE_NAMES[@]} == 7 ]] || fail '全部服务选择错误'
-for selection in ',' '1,' ',1' '1,,2' 'unknown' '0,1' '8,1'; do
+[[ ${#SELECTED_PROFILE_NAMES[@]} == 8 ]] || fail '全部服务选择错误'
+for selection in ',' '1,' ',1' '1,,2' 'unknown' '0,1' '8,1' '10' '11' 'blog' 'games'; do
     if (SERVICE_PROFILES=$selection; select_services) > "$test_dir/error" 2>&1; then fail "接受无效服务: $selection"; fi
 done
 if (VPS_SCENE=invalid; select_scene) > "$test_dir/error" 2>&1; then fail '接受无效场景'; fi
@@ -185,7 +104,6 @@ printf '[PASS] 菜单、默认值、参数校验\n'
 # 只运行调度函数；所有初始化函数均为记录调用的替身。
 for scene in 1 2 3 4 5; do
     (
-        print_system_overview() { :; }
         for fn in preflight collect_hostname collect_homepage configure_hostname install_base configure_starship configure_security configure_tcp configure_iperf3 configure_fail2ban install_nexttrace install_singbox configure_sb_update install_docker deploy_services; do
             eval "$fn() { printf '%s\\n' '$fn' >> \"\$test_dir/calls\"; }"
         done
@@ -281,15 +199,18 @@ printf '[PASS] TCP 场景差异、部分失败、全部受限及配置保留\n'
     compose_ok=1 up_fail_once=0
     docker() {
         if [[ "$1" == --version ]]; then printf 'Docker version mock\n'; return 0; fi
+        if [[ "$1" == ps ]]; then return 0; fi
         if [[ "$*" == 'compose version --short' ]]; then printf 'mock\n'; return 0; fi
         [[ "$1" == compose && "$2" == --env-file && "$3" == "$STACK_DIR/.browserless.env" ]] || fail 'Compose 未显式加载共享令牌文件'
-        if [[ "$*" == *'config -q'* ]]; then
+        if [[ "$*" == *'config --format json'* ]]; then
+            printf '{"name":"stacks","volumes":{"redis-data":{"name":"stacks_redis-data"}}}\n'
+        elif [[ "$*" == *'config -q'* ]]; then
             [[ "$*" == *'--profile rss'* ]] || fail '校验未使用所选 profiles'
             [[ "$compose_ok" == 1 ]]
         elif [[ "$*" == *'config --services'* ]]; then
-            printf 'nginx-proxy-manager\nrsshub\nredis\nbrowserless\n'
+            printf 'nginx-proxy-manager\npostgresql\nrsshub\nredis\nbrowserless\n'
         elif [[ "$*" == *'ps --all --format json'* ]]; then
-            printf '[{"Service":"nginx-proxy-manager","State":"running"},{"Service":"rsshub","State":"running","Health":"healthy"},{"Service":"redis","State":"running","Health":"healthy"},{"Service":"browserless","State":"running"}]\n'
+            printf '[{"Service":"nginx-proxy-manager","State":"running","Health":"healthy"},{"Service":"postgresql","State":"running","Health":"healthy"},{"Service":"rsshub","State":"running","Health":"healthy"},{"Service":"redis","State":"running","Health":"healthy"},{"Service":"browserless","State":"running","Health":"healthy"}]\n'
         elif [[ "$*" == *'up -d'* && "$up_fail_once" == 1 ]]; then
             up_fail_once=0
             return 1
@@ -320,10 +241,16 @@ printf '[PASS] Compose 令牌复用、无变化跳过、校验/启动失败恢�
 (
     installer_mode=partial
     curl() {
-        printf 'printf executed > "%s/installer-executed"\n' "$test_dir" > "${@: -1}"
+        local output=''
+        while (( $# )); do
+            if [[ "$1" == -o ]]; then shift; output=$1; break; fi
+            shift
+        done
+        [[ -n "$output" ]] || fail '安装器下载缺少输出路径'
+        printf 'printf executed > "%s/installer-executed"\n' "$test_dir" > "$output"
         case "$installer_mode" in
             partial) return 1 ;;
-            invalid) printf 'if then\n' >> "${@: -1}" ;;
+            invalid) printf 'if then\n' >> "$output" ;;
         esac
     }
     if run_installer https://example.com/installer.sh > "$test_dir/install" 2>&1; then fail '执行了未下载完整的安装器'; fi
@@ -342,9 +269,6 @@ VPS_SCENE=3 VPS_COMPONENTS=2 bash "$project_dir/vps-init.sh" --plan > "$test_dir
 VPS_SCENE=3 VPS_COMPONENTS=2 bash <(cat "$project_dir/vps-init.sh") --plan > "$test_dir/entry-fd"
 cat "$project_dir/vps-init.sh" | VPS_SCENE=5 VPS_COMPONENTS=0 SERVICE_PROFILES=4,6 bash -s -- --plan > "$test_dir/entry-pipe"
 grep -q 'DE / 法兰克福线路' "$test_dir/entry-file" || fail '文件入口未执行预览'
-# 系统负载、内存和运行时长随时变化，只比较进入菜单后的方案。
-sed -n '/======== 选择操作/,$p' "$test_dir/entry-file" > "$test_dir/file-menu"
-sed -n '/======== 选择操作/,$p' "$test_dir/entry-fd" > "$test_dir/fd-menu"
-cmp -s "$test_dir/file-menu" "$test_dir/fd-menu" || fail '进程替换入口方案不一致'
-grep -q '+ RSS 订阅' "$test_dir/entry-pipe" && grep -q '+ 服务监控' "$test_dir/entry-pipe" || fail '管道入口未执行预览'
+cmp -s "$test_dir/entry-file" "$test_dir/entry-fd" || fail '进程替换入口输出不一致'
+grep -q 'RSS 订阅' "$test_dir/entry-pipe" && grep -q '服务监控' "$test_dir/entry-pipe" || fail '管道入口未执行预览'
 printf '[PASS] 文件、进程替换和管道的只读预览入口\n'

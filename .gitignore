@@ -10,6 +10,9 @@
 !.env.example
 .browserless.env
 .browserless.env.*
+.database.env
+.database.env.*
+.database-connections/
 *.pem
 *.key
 *.p12
@@ -23,3 +26,4 @@
 .DS_Store
 Thumbs.db
 *.tmp
+tests/.tools/

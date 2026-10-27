@@ -6,7 +6,7 @@ test_dir=$(mktemp -d "$project_dir/tests/.reliability-test.XXXXXX")
 trap 'rm -rf -- "$test_dir"' EXIT
 source "$project_dir/vps-init.sh"
 fail() { printf '[FAIL] %s\n' "$*" >&2; exit 1; }
-if ! python3 -c 'import sys' >/dev/null 2>&1; then python3() { python "$@"; }; fi
+if ! python3 -c 'import sys' >/dev/null 2>&1; then python3() { python "$@" | sed 's/\r$//'; }; fi
 read_tty() { printf -v "$1" '%s' "${3-}"; }
 
 # 多文件校验失败不重启；启动失败恢复旧配置并验证恢复后的服务。
@@ -69,12 +69,12 @@ printf '[PASS] 多文件校验/启动失败恢复、无变化跳过、新文件�
 printf '[PASS] 保留已有自动更新策略及安全配置重复运行\n'
 
 # 健康状态使用真实 JSON 解析器，覆盖缺失、异常、无健康检查与多副本。
-snapshot_ok='[{"Service":"web","State":"running","Health":"healthy"},{"Service":"db","State":"running"}]'
+snapshot_ok='[{"Service":"web","State":"running","Health":"healthy"},{"Service":"db","State":"running","Health":"healthy"}]'
 check_service_snapshot web db <<< "$snapshot_ok" > "$test_dir/output"
-for snapshot in '[]' 'invalid' '[{"Service":"web","State":"exited"}]' '[{"Service":"web","State":"running","Health":"unhealthy"}]' '[{"Service":"web","State":"running","Health":"starting"}]' '[{"Service":"web","State":"running","Health":"healthy"},{"Service":"web","State":"exited"}]'; do
+for snapshot in '[]' 'invalid' '[{"Service":"web","State":"exited"}]' '[{"Service":"web","State":"running"}]' '[{"Service":"web","State":"running","Health":"unhealthy"}]' '[{"Service":"web","State":"running","Health":"starting"}]' '[{"Service":"web","State":"running","Health":"healthy"},{"Service":"web","State":"exited"}]'; do
     if check_service_snapshot web <<< "$snapshot" > "$test_dir/output" 2>&1; then fail '接受缺失、异常或无效状态'; fi
 done
-printf '%s\n%s\n' '{"Service":"web","State":"running","Health":"healthy"}' '{"Service":"db","State":"running"}' | check_service_snapshot web db > "$test_dir/output"
+printf '%s\n%s\n' '{"Service":"web","State":"running","Health":"healthy"}' '{"Service":"db","State":"running","Health":"healthy"}' | check_service_snapshot web db > "$test_dir/output"
 (
     COMPOSE_ENV_ARGS=() COMPOSE_PROFILE_ARGS=() SERVICE_WAIT_TIMEOUT=1
     docker() {
@@ -97,7 +97,7 @@ printf '%s\n%s\n' '{"Service":"web","State":"running","Health":"healthy"}' '{"Se
         fi
     }
     sleep() { :; }
-    wait_selected_services 1 > "$test_dir/output"
+    wait_selected_services 5 > "$test_dir/output"
     [[ $(wc -l < "$test_dir/polls") == 2 ]] || fail '没有等待服务从 starting 转为 healthy'
 )
 printf '[PASS] 逐个服务、健康状态、多副本、JSON 格式与失败退出\n'
@@ -106,7 +106,6 @@ printf '[PASS] 逐个服务、健康状态、多副本、JSON 格式与失败退
 for mode in full components status update; do
     for scene in hk domestic; do
         (
-            print_system_overview() { :; }
             for fn in preflight collect_hostname collect_homepage configure_hostname install_base configure_starship configure_security configure_tcp configure_fail2ban install_nexttrace install_singbox apply_background_actions install_docker deploy_services show_status update_selected; do
                 eval "$fn() { printf '%s\\n' '$fn' >> \"\$test_dir/mode-calls\"; }"
             done
@@ -245,7 +244,15 @@ printf '[PASS] 不适用的更新任务跳过、显式错误请求拦截及只�
 
 # cron 修改保留其他条目和注释，内容不变时不写入。
 (
-    backup_root_crontab() { printf '%s\n' "$1" > "$test_dir/cron-backup"; }
+    definition=$(declare -f backup_root_crontab)
+    definition=${definition//\/var\/backups\/vps-init/$test_dir/cron-backups}
+    eval "$definition"
+    # Git Bash 的 NTFS 临时目录不支持 install -m 0700；只替换此目录创建操作。
+    if [[ "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* ]]; then
+        install() {
+            if [[ "$#" == 4 && "$1 $2 $3" == '-d -m 0700' ]]; then mkdir -p -- "$4"; else command install "$@"; fi
+        }
+    fi
     cron_file="$test_dir/crontab"
     printf '# /usr/local/bin/sb-auto-update.sh reference\n0 1 * * * /other/backup.sh\n' > "$cron_file"
     crontab() {
@@ -256,5 +263,6 @@ printf '[PASS] 不适用的更新任务跳过、显式错误请求拦截及只�
     [[ $(wc -l < "$test_dir/cron-writes") == 1 ]] || fail '重复启用仍写入 cron'
     set_sb_update_cron 0 > "$test_dir/output"
     [[ $(wc -l < "$cron_file") == 2 ]] || fail '停用时误删其他条目或注释'
+    [[ $(find "$test_dir/cron-backups" -type f | wc -l) == 2 ]] || fail '未在隔离目录备份每次实际修改'
 )
 printf '[PASS] cron 精确修改与重复启用不写入\n'

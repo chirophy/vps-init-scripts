@@ -336,7 +336,7 @@ select_background_actions() {
         step '设置后台任务'
         echo '  以下任务独立选择；启用后会持续运行或按计划执行。'
         if [[ "$VPS_SCENE" == domestic ]]; then
-            echo '  Watchtower：定时更新本脚本管理的容器；Memos 不参与自动更新。'
+        echo '  Watchtower：定时更新所选服务；PostgreSQL、Memos、Komari 不参与。'
             choose_background_action WATCHTOWER_ACTION 'Watchtower 自动更新'
         else
             printf '  iperf3：启动网络测速服务，端口 %s；客户端命令：iperf3 -c 服务器地址 -p %s。\n' "${IPERF3_PORT:-5201}" "${IPERF3_PORT:-5201}"
@@ -497,14 +497,14 @@ select_components() {
 }
 
 select_services() {
-    AVAILABLE_PROFILES=(tools code media rss files monitoring notes)
+    AVAILABLE_PROFILES=(tools code media rss files monitoring notes database)
     declare -gA ENABLED_PROFILES=()
     COMPOSE_PROFILE_ARGS=()
     SELECTED_PROFILE_NAMES=()
     local profile selection item
     local -a requested=()
     step "选择服务组 · $(mode_label "${VPS_MODE:-full}")"
-    echo '  基础服务：NPM（Nginx Proxy Manager，反向代理与证书管理），始终包含。'
+    echo '  基础服务：NPM（反向代理与证书管理）+ PostgreSQL，始终包含。'
     if [[ "${VPS_MODE:-full}" == status ]]; then
         echo '  请选择要检查的服务组；缺少容器或服务未启动时会报告异常。'
     elif [[ "${VPS_MODE:-full}" == update ]]; then
@@ -517,10 +517,11 @@ select_services() {
     echo '  3) 音乐与下载 — Navidrome + MeTube'
     echo '  4) RSS 订阅 — RSSHub + Browserless + Redis'
     echo '  5) 文件管理 — File Browser + OpenList'
-    echo '  6) 服务监控 — Uptime Kuma + Beszel'
+    echo '  6) 服务监控 — Uptime Kuma + Beszel + Komari'
     echo '  7) 笔记备忘 — Memos'
     echo '  8) 全部可选服务组'
-    echo '  0) 仅基础服务 NPM（默认）'
+    echo '  9) 数据库管理 — pgAdmin'
+    echo '  0) 仅基础服务 NPM + PostgreSQL（默认）'
     echo '  可多选，例如 1,4,6；0 和 8 需单独使用。未选中的已有服务不会被卸载。'
     require_choice SERVICE_PROFILES '请选择服务组 [回车=0]: ' 0
     selection=${SERVICE_PROFILES//[[:space:]]/}
@@ -537,7 +538,8 @@ select_services() {
             1|tools) profile=tools ;; 2|code) profile=code ;;
             3|media) profile=media ;; 4|rss) profile=rss ;;
             5|files) profile=files ;; 6|monitoring) profile=monitoring ;;
-            7|notes) profile=notes ;; *) die "未知服务选项: $item" ;;
+            7|notes) profile=notes ;; 9|database) profile=database ;;
+            *) die "未知服务选项: $item" ;;
         esac
         ENABLED_PROFILES["$profile"]=1
     done
@@ -567,8 +569,9 @@ profile_label() {
         media) printf '音乐与下载（Navidrome、MeTube）' ;;
         rss) printf 'RSS 订阅（RSSHub、Browserless、Redis）' ;;
         files) printf '文件管理（File Browser、OpenList）' ;;
-        monitoring) printf '服务监控（Uptime Kuma、Beszel）' ;;
+        monitoring) printf '服务监控（Uptime Kuma、Beszel、Komari）' ;;
         notes) printf '笔记备忘（Memos）' ;;
+        database) printf '数据库管理（pgAdmin）' ;;
     esac
 }
 
@@ -631,7 +634,7 @@ print_plan() {
             status) info '服务操作：读取已有 Compose，检查所选容器运行 / 健康状态' ;;
             update) info '服务操作：读取已有 Compose，拉取所选镜像并重新启动服务' ;;
         esac
-        info '服务范围：NPM（反向代理与证书管理）'
+        info '服务范围：NPM（反向代理与证书管理）+ PostgreSQL'
         for profile in "${SELECTED_PROFILE_NAMES[@]}"; do
             printf '  + %s\n' "$(profile_label "$profile")"
         done
@@ -1468,6 +1471,7 @@ resolve_stack_identity() {
     local fallback=${STACK_DIR%/}
     fallback=${fallback##*/}
     [[ "${STACK_DIR%/}" != /root ]] || fallback=stacks
+    STACK_EXISTING_CONFIG_JSON=''
     containers=$(docker ps --all --format '{{.Names}}') || return 1
     if grep -qx npm <<< "$containers"; then
         project=$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project" }}' npm) || return 1
@@ -1489,6 +1493,8 @@ resolve_stack_identity() {
             project_args=(--project-name stacks)
         fi
         configuration=$(docker compose "${COMPOSE_ENV_ARGS[@]}" "${project_args[@]}" --profile '*' config --format json) || return 1
+        # config 会把字面量 $ 写成 $$，还原后才能复用数据库密码和挂载路径。
+        STACK_EXISTING_CONFIG_JSON=${configuration//\$\$/\$}
         identity=$(python3 -c '
 import json,sys
 config=json.load(sys.stdin)
@@ -1504,6 +1510,121 @@ print(((config.get("volumes") or {}).get("redis-data") or {}).get("name", ""))
     if [[ -z "$volume" && "$file_project" == "$STACK_PROJECT_NAME" ]]; then volume=$file_volume; fi
     STACK_REDIS_VOLUME_NAME=${volume:-${STACK_PROJECT_NAME}_redis-data}
     [[ "$STACK_REDIS_VOLUME_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] || { error '无法识别已有 Redis 命名卷名称，停止部署'; return 1; }
+}
+
+# 凭据和每个应用的数据库连接均只在首次生成；不自动迁移已有 SQLite 数据。
+prepare_database_storage() {
+    VPS_OLD_CONFIG_JSON="${STACK_EXISTING_CONFIG_JSON:-}" python3 - "$STACK_DIR" <<'PY'
+import json, os, pathlib, re, secrets, sys
+root = pathlib.Path(sys.argv[1])
+credential_file = root / ".database.env"
+password_keys = ["POSTGRES_PASSWORD", "NPM_DB_PASSWORD", "GITEA_DB_PASSWORD",
+                 "MEMOS_DB_PASSWORD", "OPENLIST_DB_PASSWORD", "KOMARI_DB_PASSWORD",
+                 "PGADMIN_DEFAULT_PASSWORD", "KOMARI_ADMIN_PASSWORD"]
+keys = password_keys + ["PGADMIN_DEFAULT_EMAIL"]
+def fail(message):
+    sys.exit("数据库配置：" + message)
+def check_path(path):
+    if path.is_symlink():
+        fail("拒绝使用符号链接：" + str(path))
+def has_data(path):
+    return path.exists() and any(p.is_file() for p in path.rglob("*"))
+check_path(credential_file)
+if credential_file.exists():
+    try:
+        lines = credential_file.read_text(encoding="utf-8").splitlines()
+        values = dict(line.split("=", 1) for line in lines)
+    except (ValueError, UnicodeError):
+        fail("凭据文件格式无效；请恢复备份，不要公开其内容")
+    if len(lines) != len(keys) or set(values) != set(keys):
+        fail("凭据文件项目不完整；请恢复备份，不会重新生成密码")
+else:
+    if has_data(root / "postgresql" / "data"):
+        fail("已有 PostgreSQL 数据但缺少 .database.env，请恢复原凭据文件")
+    values = {key: os.environ.get(key) or secrets.token_hex(32) for key in password_keys}
+    if not os.environ.get("KOMARI_ADMIN_PASSWORD"):
+        values["KOMARI_ADMIN_PASSWORD"] = "K0mari" + secrets.token_hex(32)
+    values["PGADMIN_DEFAULT_EMAIL"] = os.environ.get("PGADMIN_DEFAULT_EMAIL") or "admin@example.com"
+for key in password_keys:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", values[key]):
+        fail(key + " 必须为 16-128 位字母、数字、下划线或连字符")
+if not all(any(test(c) for c in values["KOMARI_ADMIN_PASSWORD"]) for test in (str.isupper, str.islower, str.isdigit)):
+    fail("KOMARI_ADMIN_PASSWORD 必须同时包含大小写字母和数字")
+if not re.fullmatch(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", values["PGADMIN_DEFAULT_EMAIL"]):
+    fail("PGADMIN_DEFAULT_EMAIL 邮箱格式无效")
+if not credential_file.exists():
+    with open(credential_file, "x", encoding="utf-8", newline="\n", opener=lambda p, flags: os.open(p, flags, 0o600)) as f:
+        f.write("".join(key + "=" + values[key] + "\n" for key in keys))
+credential_file.chmod(0o600)
+services = json.loads(os.environ.get("VPS_OLD_CONFIG_JSON") or "{}").get("services", {})
+connections = root / ".database-connections"
+check_path(connections)
+connections.mkdir(mode=0o700, exist_ok=True)
+connections.chmod(0o700)
+def postgres(name):
+    return "postgres://{0}:{1}@postgresql:5432/{0}?sslmode=disable".format(name, values[name.upper() + "_DB_PASSWORD"])
+specs = {
+    "npm": ("nginx-proxy-manager", "npm/data", lambda k: k.startswith("DB_"), {
+        "DB_POSTGRES_HOST": "postgresql", "DB_POSTGRES_PORT": "5432", "DB_POSTGRES_USER": "npm",
+        "DB_POSTGRES_NAME": "npm", "DB_POSTGRES_PASSWORD": values["NPM_DB_PASSWORD"]}),
+    "gitea": ("gitea", "gitea/data", lambda k: k.upper().startswith("GITEA__DATABASE__"), {
+        "GITEA__database__DB_TYPE": "postgres", "GITEA__database__HOST": "postgresql:5432",
+        "GITEA__database__NAME": "gitea", "GITEA__database__USER": "gitea",
+        "GITEA__database__PASSWD": values["GITEA_DB_PASSWORD"], "GITEA__database__SSL_MODE": "disable"}),
+    "memos": ("memos", "memos/data", lambda k: k in ("MEMOS_DRIVER", "MEMOS_DSN"), {
+        "MEMOS_DRIVER": "postgres", "MEMOS_DSN": postgres("memos")}),
+    "openlist": ("openlist", "OpenList", lambda k: k.startswith("DB_"), {
+        "DB_TYPE": "postgres", "DB_HOST": "postgresql", "DB_PORT": "5432", "DB_USER": "openlist",
+        "DB_NAME": "openlist", "DB_PASS": values["OPENLIST_DB_PASSWORD"], "DB_SSL_MODE": "disable"}),
+}
+for name, (service, directory, is_db_key, defaults) in specs.items():
+    target = connections / (name + ".env")
+    check_path(target)
+    if target.exists():
+        target.chmod(0o600)
+        continue
+    old_env = services.get(service, {}).get("environment") or {}
+    env = {k: str(v) for k, v in old_env.items() if is_db_key(k) and v is not None}
+    # 旧连接先于目录判断；Gitea/OpenList 保存在 app.ini/config.json 的连接仍由应用读取。
+    if not env and not has_data(root / directory):
+        env = defaults
+    elif not env:
+        print(service + "：检测到已有数据，保留原数据库，不自动迁移")
+    # Compose env_file 用双引号转义引号/反斜杠，$$ 保留字面量美元符号。
+    def quote(value):
+        return json.dumps(value.replace("$", "$$"), ensure_ascii=False)
+    with open(target, "x", encoding="utf-8", newline="\n", opener=lambda p, flags: os.open(p, flags, 0o600)) as f:
+        f.write("".join(k + "=" + quote(v) + "\n" for k, v in env.items()))
+PY
+}
+
+write_database_initializer() {
+    [[ ! -L "$STACK_DIR/postgresql" && ! -L "$STACK_DIR/postgresql/init" && ! -L "$STACK_DIR/postgresql/init/10-apps.sh" ]] || { error 'PostgreSQL 初始化路径不能是符号链接'; return 1; }
+    mkdir -p "$STACK_DIR/postgresql/init" || return 1
+    cat > "$STACK_DIR/postgresql/init/10-apps.sh" <<'DB_INIT' || return 1
+#!/bin/sh
+set -eu
+# 首次启动由官方入口运行；补装时再次执行，只创建缺失项，不重置账号密码。
+for app in npm gitea memos openlist komari; do
+    case "$app" in
+        npm) DB_PASSWORD=$NPM_DB_PASSWORD ;;
+        gitea) DB_PASSWORD=$GITEA_DB_PASSWORD ;;
+        memos) DB_PASSWORD=$MEMOS_DB_PASSWORD ;;
+        openlist) DB_PASSWORD=$OPENLIST_DB_PASSWORD ;;
+        komari) DB_PASSWORD=$KOMARI_DB_PASSWORD ;;
+    esac
+    export DB_PASSWORD
+    psql -X --username "$POSTGRES_USER" --dbname postgres --set=ON_ERROR_STOP=1 --set=app="$app" <<'SQL'
+\getenv app_password DB_PASSWORD
+SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', :'app', :'app_password')
+WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'app') \gexec
+SELECT format('CREATE DATABASE %I OWNER %I', :'app', :'app')
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = :'app') \gexec
+SELECT format('REVOKE CONNECT ON DATABASE %I FROM PUBLIC', :'app') \gexec
+SQL
+done
+DB_INIT
+    chmod 0644 "$STACK_DIR/postgresql/init/10-apps.sh"
 }
 
 deploy_services() {
@@ -1545,8 +1666,14 @@ ensure_browserless_env "$BROWSERLESS_ENV_FILE" || die 'Browserless 令牌文件�
 # 防止父进程的同名环境变量覆盖本次部署保存的令牌。
 unset BROWSERLESS_TOKEN
 COMPOSE_ENV_ARGS=(--env-file "$BROWSERLESS_ENV_FILE" -f "${STACK_DIR}/docker-compose.yml")
+if [[ -f "$STACK_DIR/.database.env" ]]; then COMPOSE_ENV_ARGS+=(--env-file "$STACK_DIR/.database.env"); fi
 info "Browserless 随机令牌已就绪（保存在服务器上，不输出令牌）"
 resolve_stack_identity || return 1
+prepare_database_storage || return 1
+write_database_initializer || return 1
+# 以保存的文件为准，防止父进程同名变量覆盖重跑时使用的密码。
+unset POSTGRES_PASSWORD NPM_DB_PASSWORD GITEA_DB_PASSWORD MEMOS_DB_PASSWORD OPENLIST_DB_PASSWORD KOMARI_DB_PASSWORD PGADMIN_DEFAULT_EMAIL PGADMIN_DEFAULT_PASSWORD KOMARI_ADMIN_PASSWORD
+COMPOSE_ENV_ARGS=(--env-file "$BROWSERLESS_ENV_FILE" --env-file "$STACK_DIR/.database.env" -f "$STACK_DIR/docker-compose.yml")
 
 COMPOSE_TARGET="${STACK_DIR}/docker-compose.yml"
 COMPOSE_CANDIDATE=$(mktemp "${STACK_DIR}/.compose-candidate.XXXXXX")
@@ -1571,6 +1698,10 @@ services:
     image: jc21/nginx-proxy-manager:latest
     container_name: npm
     restart: unless-stopped
+    env_file: [./.database-connections/npm.env]
+    depends_on:
+      postgresql:
+        condition: service_healthy
     ports:
       - "80:80"
       - "81:81"
@@ -1581,6 +1712,50 @@ services:
     healthcheck:
       <<: *vps-healthcheck
       test: ['CMD', '/usr/bin/check-health']
+  # ==================== 共享数据库与管理 ====================
+  postgresql:
+    image: postgres:17-alpine
+    container_name: postgresql
+    restart: unless-stopped
+    # 固定大版本；数据库升级由备份及人工核对控制。
+    labels:
+      com.centurylinklabs.watchtower.enable: "false"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+      POSTGRES_PASSWORD: '${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}'
+      NPM_DB_PASSWORD: '${NPM_DB_PASSWORD:?NPM_DB_PASSWORD is required}'
+      GITEA_DB_PASSWORD: '${GITEA_DB_PASSWORD:?GITEA_DB_PASSWORD is required}'
+      MEMOS_DB_PASSWORD: '${MEMOS_DB_PASSWORD:?MEMOS_DB_PASSWORD is required}'
+      OPENLIST_DB_PASSWORD: '${OPENLIST_DB_PASSWORD:?OPENLIST_DB_PASSWORD is required}'
+      KOMARI_DB_PASSWORD: '${KOMARI_DB_PASSWORD:?KOMARI_DB_PASSWORD is required}'
+    volumes:
+      - ./postgresql/data:/var/lib/postgresql/data
+      - ./postgresql/init:/docker-entrypoint-initdb.d:ro
+    # 不发布 5432，应用通过容器网络中的 postgresql:5432 访问。
+    healthcheck:
+      <<: *vps-healthcheck
+      test: ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -U "$$POSTGRES_USER" -d postgres']
+      start_period: 30s
+
+  pgadmin4:
+    labels: *vps-labels
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin4
+    restart: unless-stopped
+    profiles: ["database"]
+    environment:
+      PGADMIN_DEFAULT_EMAIL: '${PGADMIN_DEFAULT_EMAIL:?PGADMIN_DEFAULT_EMAIL is required}'
+      PGADMIN_DEFAULT_PASSWORD: '${PGADMIN_DEFAULT_PASSWORD:?PGADMIN_DEFAULT_PASSWORD is required}'
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+      - ./pgadmin/servers.json:/pgadmin4/servers.json:ro
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    healthcheck:
+      <<: *vps-healthcheck
+      test: ['CMD', '/venv/bin/python3', '-c', 'import urllib.request; urllib.request.urlopen("http://127.0.0.1/misc/ping", timeout=5)']
   # ==================== 自动化更新 ====================
   watchtower:
     labels: *vps-labels
@@ -1632,6 +1807,10 @@ services:
     container_name: gitea
     restart: unless-stopped
     profiles: ["code"]
+    env_file: [./.database-connections/gitea.env]
+    depends_on:
+      postgresql:
+        condition: service_healthy
     environment:
       - USER_UID=1000
       - USER_GID=1000
@@ -1747,6 +1926,10 @@ services:
     image: openlistteam/openlist:latest
     container_name: openlist
     profiles: ["files"]
+    env_file: [./.database-connections/openlist.env]
+    depends_on:
+      postgresql:
+        condition: service_healthy
     user: "0:0"
     restart: unless-stopped
     volumes:
@@ -1780,6 +1963,25 @@ services:
       <<: *vps-healthcheck
       test: ['CMD', '/beszel', 'health', '--url', 'http://localhost:8090']
       interval: 120s
+  komari:
+    # 监控指标可放 PostgreSQL；账号和站点配置仍保存在 /app/data 的 SQLite 中。
+    image: ghcr.io/komari-monitor/komari:1.6.0
+    labels:
+      com.centurylinklabs.watchtower.enable: "false"
+    container_name: komari
+    restart: unless-stopped
+    profiles: ["monitoring"]
+    environment:
+      GIN_MODE: release
+      KOMARI_LISTEN: 0.0.0.0:25774
+    volumes:
+      - ./komari/data:/app/data
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    healthcheck:
+      <<: *vps-healthcheck
+      test: ['CMD', 'curl', '-fsS', '--max-time', '5', '-o', '/dev/null', 'http://127.0.0.1:25774/']
   # ==================== 笔记系统 ====================
   memos:
     image: __MEMOS_IMAGE__
@@ -1789,6 +1991,10 @@ services:
     container_name: memos
     restart: unless-stopped
     profiles: ["notes"]
+    env_file: [./.database-connections/memos.env]
+    depends_on:
+      postgresql:
+        condition: service_healthy
     volumes:
       - ./memos/data:/var/opt/memos
     healthcheck:
@@ -1798,6 +2004,7 @@ services:
 volumes:
   redis-data:
     name: __STACK_REDIS_VOLUME_NAME__
+  pgadmin-data:
 
 networks:
   default:
@@ -1808,8 +2015,12 @@ COMPOSE_EOF
 sed -i "s|__HOMEPAGE_HOST__|${HOMEPAGE_HOST}|g" "$COMPOSE_CANDIDATE"
 sed -i "s|__WATCHTOWER_API__|${watchtower_api}|g; s|__MEMOS_IMAGE__|${MEMOS_IMAGE:-neosmemo/memos:0.31.0}|g" "$COMPOSE_CANDIDATE"
 sed -i "s|__STACK_PROJECT_NAME__|${STACK_PROJECT_NAME}|g; s|__STACK_REDIS_VOLUME_NAME__|${STACK_REDIS_VOLUME_NAME}|g" "$COMPOSE_CANDIDATE"
+mkdir -p "$STACK_DIR/pgadmin" || { rm -f -- "$COMPOSE_CANDIDATE"; return 1; }
+if [[ ! -e "$STACK_DIR/pgadmin/servers.json" ]]; then
+    printf '%s\n' '{"Servers":{"1":{"Name":"VPS PostgreSQL","Group":"VPS","Host":"postgresql","Port":5432,"MaintenanceDB":"postgres","Username":"postgres","SSLMode":"prefer"}}}' > "$STACK_DIR/pgadmin/servers.json"
+fi
 
-if ! docker compose --env-file "$BROWSERLESS_ENV_FILE" --project-directory "$STACK_DIR" -f "$COMPOSE_CANDIDATE" "${COMPOSE_PROFILE_ARGS[@]}" config -q; then
+if ! docker compose --env-file "$BROWSERLESS_ENV_FILE" --env-file "$STACK_DIR/.database.env" --project-directory "$STACK_DIR" -f "$COMPOSE_CANDIDATE" "${COMPOSE_PROFILE_ARGS[@]}" config -q; then
     rm -f -- "$COMPOSE_CANDIDATE"
     error "docker-compose.yml 校验失败，保留原文件，未拉取镜像或启动服务"
     exit 1
@@ -1863,7 +2074,7 @@ if [[ -n "${ENABLED_PROFILES[files]+x}" ]]; then
         echo "  ${FILEBROWSER_PASSWORD_LINE}"
     else
         warn "未在日志中找到 File Browser 首次密码（已有数据库时不会再次生成）"
-        warn "如为首次部署，请检查: cd ${STACK_DIR} && docker compose --env-file .browserless.env logs filebrowser"
+        warn "如为首次部署，请检查: cd ${STACK_DIR} && docker compose --env-file .browserless.env --env-file .database.env logs filebrowser"
     fi
 fi
 
@@ -1894,6 +2105,10 @@ echo "     Gitea:         3000    Uptime Kuma:    3001"
 echo "     Navidrome:     4533    Beszel Hub:     8090"
 echo "     Metube:        8081    Memos:          5230"
 echo "     RSSHub:        1200"
+echo "     pgAdmin:       80      Komari:         25774"
+echo "     PostgreSQL:    5432（仅容器内网）"
+echo "     数据库与管理账号凭据：${STACK_DIR}/.database.env（0600，不输出密码）"
+echo "     应用数据库连接：${STACK_DIR}/.database-connections/（重跑复用）"
 echo ""
 echo "  3. ghcr.io 镜像拉取失败？"
 echo "     如 homepage / it-tools / metube 拉取超时，可手动配置 ghcr.io 代理"
@@ -1976,6 +2191,10 @@ setup_existing_stack() {
     if [[ $(wc -l < "$BROWSERLESS_ENV_FILE") -ne 1 ]] || ! grep -qxE 'BROWSERLESS_TOKEN=[0-9a-f]{64}' "$BROWSERLESS_ENV_FILE"; then error '已有令牌文件格式无效'; return 1; fi
     unset BROWSERLESS_TOKEN
     COMPOSE_ENV_ARGS=(--env-file "$BROWSERLESS_ENV_FILE" -f "$STACK_DIR/docker-compose.yml")
+    if [[ -f "$STACK_DIR/.database.env" ]]; then
+        unset POSTGRES_PASSWORD NPM_DB_PASSWORD GITEA_DB_PASSWORD MEMOS_DB_PASSWORD OPENLIST_DB_PASSWORD KOMARI_DB_PASSWORD PGADMIN_DEFAULT_EMAIL PGADMIN_DEFAULT_PASSWORD KOMARI_ADMIN_PASSWORD
+        COMPOSE_ENV_ARGS+=(--env-file "$STACK_DIR/.database.env")
+    fi
 }
 
 # Compose 的 JSON 输出兼容数组或逐行对象；按 Service 字段逐一核对所选服务。
@@ -2035,13 +2254,54 @@ wait_selected_services() {
     done
 }
 
+prepare_postgresql_databases() {
+    # 兼容仍在使用旧 Compose 的状态/更新模式。
+    grep -q '^  postgresql:' "$STACK_DIR/docker-compose.yml" || return 0
+    [[ -f "$STACK_DIR/.database.env" && -f "$STACK_DIR/postgresql/init/10-apps.sh" ]] || { error '缺少数据库凭据或初始化文件，请先恢复备份或使用组件模式'; return 1; }
+    docker compose "${COMPOSE_ENV_ARGS[@]}" up -d postgresql || return 1
+    local deadline=$((SECONDS + SERVICE_WAIT_TIMEOUT))
+    until docker compose "${COMPOSE_ENV_ARGS[@]}" exec -T postgresql pg_isready -h 127.0.0.1 -U postgres -d postgres >/dev/null 2>&1; do
+        (( SECONDS < deadline )) || { error 'PostgreSQL 启动超时，未启动应用'; return 1; }
+        sleep 2
+    done
+    docker compose "${COMPOSE_ENV_ARGS[@]}" exec -T postgresql sh /docker-entrypoint-initdb.d/10-apps.sh || { error '应用数据库创建失败，未启动应用'; return 1; }
+}
+
+initialize_komari() {
+    [[ -n "${ENABLED_PROFILES[monitoring]+x}" && -f "$STACK_DIR/.database.env" ]] || return 0
+    grep -q '^  komari:' "$STACK_DIR/docker-compose.yml" || return 0
+    local response code required deadline=$((SECONDS + SERVICE_WAIT_TIMEOUT))
+    while true; do
+        response=$(docker compose "${COMPOSE_ENV_ARGS[@]}" exec -T komari curl -sS --max-time 5 -w '\n%{http_code}' http://127.0.0.1:25774/api/install/status 2>/dev/null) || response=''
+        code=${response##*$'\n'}
+        # 安装 API 在已完成安装后返回 404；保留原指标库及账号，不重置已有实例。
+        [[ "$code" != 404 ]] || return 0
+        if [[ "$code" == 200 ]]; then
+            required=$(python3 -c 'import json,sys; print(str(json.load(sys.stdin)["data"]["required"]).lower())' <<< "${response%$'\n'*}") || return 1
+            [[ "$required" == true ]] || return 0
+            break
+        fi
+        (( SECONDS < deadline )) || { error 'Komari 安装接口启动超时'; return 1; }
+        sleep 2
+    done
+    # 使用官方首次安装接口，只向新实例提交一次；凭据从受限文件读入标准输入。
+    python3 - "$STACK_DIR/.database.env" <<'PY' | docker compose "${COMPOSE_ENV_ARGS[@]}" exec -T komari curl -fsS --max-time 30 -H 'Content-Type: application/json' --data-binary @- http://127.0.0.1:25774/api/install/complete >/dev/null
+import json, pathlib, sys
+values = dict(line.split("=", 1) for line in pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines())
+print(json.dumps({"username": "admin", "password": values["KOMARI_ADMIN_PASSWORD"], "sitename": "Komari",
+                  "metric_dsn": "postgresql://komari:" + values["KOMARI_DB_PASSWORD"] + "@postgresql:5432/komari?sslmode=disable"}))
+PY
+}
+
 start_selected_services() {
     local update=$1
     if [[ "$update" == 1 ]]; then
         docker compose "${COMPOSE_ENV_ARGS[@]}" "${COMPOSE_PROFILE_ARGS[@]}" pull || { error '镜像更新失败，未执行启动'; return 1; }
     fi
+    prepare_postgresql_databases || return 1
     # 普通安装只补齐缺失镜像；不主动替换已有镜像。
     docker compose "${COMPOSE_ENV_ARGS[@]}" "${COMPOSE_PROFILE_ARGS[@]}" up -d || { error 'Compose 启动失败'; return 1; }
+    initialize_komari || { error 'Komari 首次配置失败，请检查服务日志后重跑'; return 1; }
     if [[ "$WATCHTOWER_ACTION" == 2 ]]; then
         docker compose "${COMPOSE_ENV_ARGS[@]}" --profile watchtower stop watchtower || return 1
     fi
@@ -2133,17 +2393,24 @@ Docker 服务组（SERVICE_PROFILES，支持逗号多选，也接受对应 profi
   3) media：音乐与下载（Navidrome + MeTube）
   4) rss：RSS 订阅（RSSHub + Browserless + Redis）
   5) files：文件管理（File Browser + OpenList）
-  6) monitoring：服务监控（Uptime Kuma + Beszel）
+  6) monitoring：服务监控（Uptime Kuma + Beszel + Komari）
   7) notes：笔记备忘（Memos）
   8) all：全部服务组
-  0) none：仅基础服务 NPM（默认，反向代理与证书管理）
+  9) database：数据库管理（pgAdmin）
+  0) none：仅基础服务 NPM + PostgreSQL（默认）
 例如 1,4,6；0 和 8 需单独使用。后台任务单独选择，未选择的已有服务不会被卸载。
 其他变量：VPS_HOSTNAME、UPGRADE_SYSTEM、INSTALL_STARSHIP、RESET_STARSHIP_CONFIG、
           IPERF3_PORT、HOMEPAGE_HOST、MEMOS_IMAGE、STACK_DIR、COMPOSE_PROJECT_NAME、DOCKER_MIRRORS、SERVICE_WAIT_TIMEOUT。
+数据库：PGADMIN_DEFAULT_EMAIL（默认 admin@example.com）；首次可通过 POSTGRES_PASSWORD、
+        NPM_DB_PASSWORD、GITEA_DB_PASSWORD、MEMOS_DB_PASSWORD、OPENLIST_DB_PASSWORD、KOMARI_DB_PASSWORD、
+        PGADMIN_DEFAULT_PASSWORD、KOMARI_ADMIN_PASSWORD 提供密码，否则随机生成；限 16-128 位字母数字及 _-。
+Komari 初始用户名 admin，密码须同时有大小写字母和数字。凭据保存为 .database.env（0600），重跑以文件为准。
+新部署 NPM/Gitea/Memos/OpenList 及 Komari 指标库使用 PostgreSQL，各自独立库和账号；已有数据库连接/数据保留。
+手动 Compose：docker compose --env-file .browserless.env --env-file .database.env <子命令>。
 Docker 默认目录：/root；Compose 为 /root/docker-compose.yml，应用数据均位于该目录下。
 File Browser 固定管理 /root；Redis 保留命名卷。已有部署沿用原项目名和实际 Redis 卷名。
 仅选中的服务全部达到 running + healthy 才通过验收；应用新挂载及健康检查请选组件模式。
-旧部署需先停服、备份并迁移 Compose、令牌与应用数据；脚本不会自动搬迁文件。
+旧部署需先停服、备份并迁移 Compose、令牌、.database.env、.database-connections 与应用数据；脚本不会自动搬迁文件。
 旧自定义项目在容器已删除后迁移时，请通过 COMPOSE_PROJECT_NAME 指定原项目名。
 HELP
 }
