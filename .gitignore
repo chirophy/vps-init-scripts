@@ -13,6 +13,8 @@
 .database.env
 .database.env.*
 .database-connections/
+rustdesk/data/
+id_ed25519
 *.pem
 *.key
 *.p12
@@ -24,6 +26,8 @@
 
 # 系统临时文件
 .DS_Store
+._*
+__MACOSX/
 Thumbs.db
 *.tmp
 tests/.tools/

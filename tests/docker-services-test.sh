@@ -55,13 +55,29 @@ STACK_DIR="$test_dir/fresh"
 SERVICE_PROFILES=8 select_services > "$test_dir/output"
 deploy_services > "$test_dir/output" 2>&1 || { cat "$test_dir/output"; fail '新服务生成失败'; }
 compose_config "${COMPOSE_ENV_ARGS[@]}" --profile '*' config --format json > "$test_dir/config.json"
+compose_config "${COMPOSE_ENV_ARGS[@]}" config --services > "$test_dir/base-services"
+! grep -Eq '^hbb[rs]$' "$test_dir/base-services" || fail 'RustDesk 意外默认启用'
+compose_config "${COMPOSE_ENV_ARGS[@]}" --profile rustdesk config --services > "$test_dir/rustdesk-services"
+grep -qx hbbs "$test_dir/rustdesk-services" && grep -qx hbbr "$test_dir/rustdesk-services" || fail 'RustDesk profile 未包含两个服务'
 python3 - "$test_dir/config.json" "$STACK_DIR" "$test_dir/komari-request.json" <<'PY'
 import json, pathlib, sys
 config = json.loads(pathlib.Path(sys.argv[1]).read_text())
 services = config["services"]
 assert set(services) == {"nginx-proxy-manager", "postgresql", "pgadmin4", "watchtower", "homepage",
                          "it-tools", "gitea", "navidrome", "metube", "rsshub", "browserless", "redis",
-                         "filebrowser", "openlist", "uptime-kuma", "beszel", "komari", "memos"}
+                         "filebrowser", "openlist", "uptime-kuma", "beszel", "komari", "memos", "hbbs", "hbbr"}
+for name in ("hbbs", "hbbr"):
+    service = services[name]
+    assert service["image"] == "rustdesk/rustdesk-server:latest"
+    assert service["command"] == [name]
+    assert service["network_mode"] == "host"
+    assert not service.get("ports") and not service.get("networks")
+    assert service["profiles"] == ["rustdesk"]
+    assert service["restart"] == "unless-stopped"
+    assert service["volumes"][0]["target"] == "/root"
+    assert service["volumes"][0]["source"].replace("\\", "/").endswith("/rustdesk/data")
+assert services["hbbs"]["volumes"] == services["hbbr"]["volumes"]
+assert services["hbbs"]["depends_on"]["hbbr"]["condition"] == "service_started"
 assert all("build" not in service for service in services.values())
 root = pathlib.Path(sys.argv[2])
 credentials = dict(line.split("=", 1) for line in (root / ".database.env").read_text().splitlines())

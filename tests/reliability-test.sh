@@ -69,6 +69,11 @@ printf '[PASS] 多文件校验/启动失败恢复、无变化跳过、新文件�
 printf '[PASS] 保留已有自动更新策略及安全配置重复运行\n'
 
 # 健康状态使用真实 JSON 解析器，覆盖缺失、异常、无健康检查与多副本。
+# scratch 镜像只验收运行状态，但不能忽略缺失、退出或显式 unhealthy。
+printf '%s' '[{"Service":"hbbs","State":"running"},{"Service":"hbbr","State":"running"}]' | check_service_snapshot hbbs hbbr > "$test_dir/output"
+for snapshot in '[]' '[{"Service":"hbbs","State":"exited"}]' '[{"Service":"hbbs","State":"running","Health":"unhealthy"}]' '[{"Service":"hbbs","State":"running","Health":"starting"}]'; do
+    if check_service_snapshot hbbs <<< "$snapshot" > "$test_dir/output"; then fail 'RustDesk 异常状态被接受'; fi
+done
 snapshot_ok='[{"Service":"web","State":"running","Health":"healthy"},{"Service":"db","State":"running","Health":"healthy"}]'
 check_service_snapshot web db <<< "$snapshot_ok" > "$test_dir/output"
 for snapshot in '[]' 'invalid' '[{"Service":"web","State":"exited"}]' '[{"Service":"web","State":"running"}]' '[{"Service":"web","State":"running","Health":"unhealthy"}]' '[{"Service":"web","State":"running","Health":"starting"}]' '[{"Service":"web","State":"running","Health":"healthy"},{"Service":"web","State":"exited"}]'; do

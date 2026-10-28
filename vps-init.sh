@@ -497,7 +497,7 @@ select_components() {
 }
 
 select_services() {
-    AVAILABLE_PROFILES=(tools code media rss files monitoring notes database)
+    AVAILABLE_PROFILES=(tools code media rss files monitoring notes database rustdesk)
     declare -gA ENABLED_PROFILES=()
     COMPOSE_PROFILE_ARGS=()
     SELECTED_PROFILE_NAMES=()
@@ -521,6 +521,7 @@ select_services() {
     echo '  7) 笔记备忘 — Memos'
     echo '  8) 全部可选服务组'
     echo '  9) 数据库管理 — pgAdmin'
+    echo '  10) 远程桌面 — RustDesk（hbbs + hbbr）'
     echo '  0) 仅基础服务 NPM + PostgreSQL（默认）'
     echo '  可多选，例如 1,4,6；0 和 8 需单独使用。未选中的已有服务不会被卸载。'
     require_choice SERVICE_PROFILES '请选择服务组 [回车=0]: ' 0
@@ -539,6 +540,7 @@ select_services() {
             3|media) profile=media ;; 4|rss) profile=rss ;;
             5|files) profile=files ;; 6|monitoring) profile=monitoring ;;
             7|notes) profile=notes ;; 9|database) profile=database ;;
+            10|rustdesk) profile=rustdesk ;;
             *) die "未知服务选项: $item" ;;
         esac
         ENABLED_PROFILES["$profile"]=1
@@ -572,6 +574,7 @@ profile_label() {
         monitoring) printf '服务监控（Uptime Kuma、Beszel、Komari）' ;;
         notes) printf '笔记备忘（Memos）' ;;
         database) printf '数据库管理（pgAdmin）' ;;
+        rustdesk) printf '远程桌面（RustDesk）' ;;
     esac
 }
 
@@ -2001,6 +2004,30 @@ services:
       <<: *vps-healthcheck
       test: ['CMD', 'wget', '-q', '-O', '/dev/null', '-T', '5', 'http://127.0.0.1:5230/healthz']
       start_period: 120s
+  # ==================== RustDesk 远程桌面 ====================
+  # 官方 classic 镜像基于 scratch，无 shell/健康检查工具；验收仅检查运行状态。
+  hbbs:
+    labels: *vps-labels
+    container_name: hbbs
+    image: rustdesk/rustdesk-server:latest
+    command: hbbs
+    profiles: ["rustdesk"]
+    volumes:
+      - ./rustdesk/data:/root
+    network_mode: "host"
+    depends_on:
+      - hbbr
+    restart: unless-stopped
+  hbbr:
+    labels: *vps-labels
+    container_name: hbbr
+    image: rustdesk/rustdesk-server:latest
+    command: hbbr
+    profiles: ["rustdesk"]
+    volumes:
+      - ./rustdesk/data:/root
+    network_mode: "host"
+    restart: unless-stopped
 volumes:
   redis-data:
     name: __STACK_REDIS_VOLUME_NAME__
@@ -2222,8 +2249,11 @@ for service in sys.argv[1:]:
     for row in containers:
         state=row.get("State","")
         health=row.get("Health","") or ""
-        ready=state=="running" and health=="healthy"
-        print(service+": "+state+" / "+(health or "缺少健康检查，未通过验收；请用组件模式重新生成配置"))
+        # RustDesk classic 是 scratch 镜像，没有可执行的健康探针。
+        runtime_only=service in ("hbbs","hbbr") and not health
+        ready=state=="running" and (health=="healthy" or runtime_only)
+        detail="仅检查运行状态，RustDesk 注册/中继需客户端验证" if runtime_only else "缺少健康检查，未通过验收；请用组件模式重新生成配置"
+        print(service+": "+state+" / "+(health or detail))
         failed=failed or not ready
 sys.exit(1 if failed else 0)
 ' "$@"
@@ -2247,7 +2277,7 @@ wait_selected_services() {
         if (( result > 1 )); then error '容器状态无法解析或检查工具不可用'; return 1; fi
         if (( SECONDS >= deadline )); then
             printf '%s\n' "$report" >&2
-            error '所选服务尚未全部达到 running + healthy，或容器状态无效'
+            error '所选服务尚未通过验收（通常需 running + healthy，RustDesk 无探针时仅检查 running），或容器状态无效'
             return 1
         fi
         sleep 2
@@ -2397,6 +2427,7 @@ Docker 服务组（SERVICE_PROFILES，支持逗号多选，也接受对应 profi
   7) notes：笔记备忘（Memos）
   8) all：全部服务组
   9) database：数据库管理（pgAdmin）
+  10) rustdesk：远程桌面（hbbs + hbbr，共享 rustdesk/data，使用主机网络）
   0) none：仅基础服务 NPM + PostgreSQL（默认）
 例如 1,4,6；0 和 8 需单独使用。后台任务单独选择，未选择的已有服务不会被卸载。
 其他变量：VPS_HOSTNAME、UPGRADE_SYSTEM、INSTALL_STARSHIP、RESET_STARSHIP_CONFIG、
@@ -2409,7 +2440,9 @@ Komari 初始用户名 admin，密码须同时有大小写字母和数字。凭�
 手动 Compose：docker compose --env-file .browserless.env --env-file .database.env <子命令>。
 Docker 默认目录：/root；Compose 为 /root/docker-compose.yml，应用数据均位于该目录下。
 File Browser 固定管理 /root；Redis 保留命名卷。已有部署沿用原项目名和实际 Redis 卷名。
-仅选中的服务全部达到 running + healthy 才通过验收；应用新挂载及健康检查请选组件模式。
+所选服务需达到 running + healthy；RustDesk classic 无健康探针，仅检查 running，需另用客户端验证。
+RustDesk 需放行 TCP 21115–21117、UDP 21116；客户端 Key 使用 rustdesk/data/id_ed25519.pub。
+应用新挂载及健康检查请选组件模式。
 旧部署需先停服、备份并迁移 Compose、令牌、.database.env、.database-connections 与应用数据；脚本不会自动搬迁文件。
 旧自定义项目在容器已删除后迁移时，请通过 COMPOSE_PROJECT_NAME 指定原项目名。
 HELP

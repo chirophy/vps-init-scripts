@@ -50,6 +50,7 @@ bash vps-init.sh --help
 | 7 | Memos |
 | 8 | 全部可选服务 |
 | 9 | pgAdmin（PostgreSQL 管理） |
+| 10 | RustDesk（hbbs ID 服务、hbbr 中继服务） |
 | 0 | 仅 NPM、PostgreSQL（默认） |
 
 - Compose 默认位于 `/root/docker-compose.yml`，应用绑定目录统一放在 `/root` 下，可通过 `STACK_DIR` 调整；pgAdmin 与 Redis 使用 Docker 命名卷。
@@ -61,7 +62,19 @@ bash vps-init.sh --help
 - pgAdmin 的邮箱通过 `PGADMIN_DEFAULT_EMAIL` 设置（首次默认 `admin@example.com`），登录密码见 `.database.env`，已预置 PostgreSQL 服务器地址；连接时使用文件中的 `POSTGRES_PASSWORD`。Komari 首次自动完成安装，用户名为 `admin`，密码见 `KOMARI_ADMIN_PASSWORD`。已有 Komari 实例保留原账号和指标库，不自动迁移。
 - 应用连接分别保存在 `.database-connections/{npm,gitea,memos,openlist}.env`（目录 `0700`、文件 `0600`）。首次接入脚本时，优先保留原 Compose 中的数据库环境变量；应用目录已有文件时保留原数据库，避免把 SQLite 或自定义连接切到空库。后续复用这些连接文件；切换数据库须另行备份和迁移，不能只删除连接文件。
 - pgAdmin、Komari 统一通过 NPM 访问，反代目标分别为 `pgadmin4:80`、`komari:25774`，沿用脚本原有的容器内网部署方式。
-- 所选服务全部达到 `running + healthy` 才通过验收，默认最多等待 300 秒，可通过 `SERVICE_WAIT_TIMEOUT` 调整。
+- 所选服务通常需达到 `running + healthy` 才通过验收，默认最多等待 300 秒，可通过 `SERVICE_WAIT_TIMEOUT` 调整。RustDesk classic 镜像基于 scratch，没有健康探针，两个容器仅检查 `running`；注册与中继连通性仍须通过客户端验证。
+
+### RustDesk
+
+整合版选择操作 `2` → 场景 `5` → 服务组 `10`（或 `SERVICE_PROFILES=rustdesk`）；`8/all` 也包含该组。旧版 `domestic-vps-init.sh` 使用 profile 名称 `rustdesk`，其 `all` 同样包含该组。
+
+- 保留 [RustDesk 官方 Compose 示例](https://rustdesk.com/docs/en/self-host/rustdesk-server-oss/docker/) 的镜像、命令、依赖、主机网络与重启策略；共享挂载改为 `./rustdesk/data:/root`，默认宿主机路径为 `/root/rustdesk/data`。已有 `./data` 部署请先停服并备份，将原数据和密钥迁入新目录，避免生成新密钥导致客户端不匹配。
+- `network_mode: host` 适用于本项目的 Linux VPS，无需配置 `ports`，也不加入 Compose 默认桥接网络。请在服务器防火墙和云安全组放行 **TCP 21115–21117、UDP 21116**，脚本不会自动开放这些端口。
+- 不用 Web 客户端时保持 TCP 21118/21119 关闭；需要 Web 客户端时，按官方说明通过反向代理提供访问，并限制这两个端口只能由代理连接。
+- 客户端的 ID 服务器填写 VPS 公网 IP 或域名，中继服务器可显式填写同一地址的 `21117` 端口；Key 填写 `rustdesk/data/id_ed25519.pub` 的内容。不要分享或提交无 `.pub` 后缀的私钥 `id_ed25519`。`depends_on` 只控制启动顺序，不代表中继已可用。
+- 保留用户指定的 `latest` 标签；整合版启用 Watchtower 时这两个服务也参与自动更新。正式使用前请分别验证 ID 注册、直连及强制中继连接。
+
+### 手动管理
 
 手动管理新部署时，同时加载两个凭据文件：
 

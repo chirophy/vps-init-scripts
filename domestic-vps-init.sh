@@ -425,7 +425,7 @@ done
 info "Homepage 允许访问域名: ${HOMEPAGE_HOST}"
 
 # NPM 与 Watchtower 始终启动；其余服务按 profile 分类选择
-AVAILABLE_PROFILES=(tools code media rss files monitoring notes)
+AVAILABLE_PROFILES=(tools code media rss files monitoring notes rustdesk)
 declare -A ENABLED_PROFILES=()
 COMPOSE_PROFILE_ARGS=()
 PROFILE_SELECTION="${SERVICE_PROFILES:-}"
@@ -438,6 +438,7 @@ echo "  rss         RSSHub、Browserless、Redis"
 echo "  files       File Browser、OpenList"
 echo "  monitoring  Uptime Kuma、Beszel"
 echo "  notes       Memos"
+echo "  rustdesk    RustDesk（hbbs、hbbr）"
 
 if [[ -z "${PROFILE_SELECTION}" ]]; then
     if [[ -r /dev/tty ]]; then
@@ -688,6 +689,27 @@ services:
     profiles: ["notes"]
     volumes:
       - ./memos/data:/var/opt/memos
+  # ==================== RustDesk 远程桌面 ====================
+  hbbs:
+    container_name: hbbs
+    image: rustdesk/rustdesk-server:latest
+    command: hbbs
+    profiles: ["rustdesk"]
+    volumes:
+      - ./rustdesk/data:/root
+    network_mode: "host"
+    depends_on:
+      - hbbr
+    restart: unless-stopped
+  hbbr:
+    container_name: hbbr
+    image: rustdesk/rustdesk-server:latest
+    command: hbbr
+    profiles: ["rustdesk"]
+    volumes:
+      - ./rustdesk/data:/root
+    network_mode: "host"
+    restart: unless-stopped
 volumes:
   redis-data:
 
