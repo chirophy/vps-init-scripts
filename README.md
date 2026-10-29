@@ -37,7 +37,7 @@ bash vps-init.sh --help
 
 ## Docker 服务
 
-选择场景 `5` 后按需多选服务组，例如 `1,4,6,9`。NPM 与 PostgreSQL 始终包含，Watchtower 自动更新单独选择。
+选择场景 `5` 后按需多选服务组，例如 `1,4,6,8`。只启动所选服务及其依赖；NPM 通过 `10/npm` 明确选择，PostgreSQL 仅在所选应用依赖它时启动。Watchtower 自动更新单独选择，默认保持现状（新部署不启用）。
 
 | 序号 | 服务 |
 | --- | --- |
@@ -48,11 +48,13 @@ bash vps-init.sh --help
 | 5 | File Browser、OpenList |
 | 6 | Uptime Kuma、Beszel、Komari |
 | 7 | Memos |
-| 8 | 全部可选服务 |
-| 9 | pgAdmin（PostgreSQL 管理） |
-| 10 | RustDesk（hbbs ID 服务、hbbr 中继服务） |
-| 0 | 仅 NPM、PostgreSQL（默认） |
+| 8 | pgAdmin（PostgreSQL 管理） |
+| 9 | RustDesk（hbbs ID 服务、hbbr 中继服务） |
+| 10 | NPM 反向代理，可与其他组组合 |
+| 11 | 全部可选服务 |
+| 0 | 仅 NPM 及其数据库（默认，兼容 `none`） |
 
+- 编号已按服务顺序整理：`8=database`、`9=rustdesk`、`10=npm`、`11=all`。使用旧数字参数的自动化需同步调整；profile 名称保持不变。
 - Compose 默认位于 `/root/docker-compose.yml`，应用绑定目录统一放在 `/root` 下，可通过 `STACK_DIR` 调整；pgAdmin 与 Redis 使用 Docker 命名卷。
 - File Browser 固定管理 `/root`；音乐库默认 `/root/Music`，OpenList 应用数据默认 `/root/OpenList`；Redis 保留命名卷。
 - Browserless 共享令牌保存在 `/root/.browserless.env`（权限 `0600`）。手动运行 Compose 时须通过 `--env-file` 加载该文件，请勿上传。
@@ -61,12 +63,16 @@ bash vps-init.sh --help
 - 数据库密码、pgAdmin 和 Komari 初始账号密码在部署时随机生成，保存在 `.database.env`（权限 `0600`），重跑复用。首次可通过 `POSTGRES_PASSWORD`、`NPM_DB_PASSWORD`、`GITEA_DB_PASSWORD`、`MEMOS_DB_PASSWORD`、`OPENLIST_DB_PASSWORD`、`KOMARI_DB_PASSWORD`、`PGADMIN_DEFAULT_PASSWORD`、`KOMARI_ADMIN_PASSWORD` 自行提供，限 16–128 位字母、数字、下划线或连字符；Komari 密码还须含大小写字母和数字。已有文件优先于环境变量，删除文件不会重置数据库密码。
 - pgAdmin 的邮箱通过 `PGADMIN_DEFAULT_EMAIL` 设置（首次默认 `admin@example.com`），登录密码见 `.database.env`，已预置 PostgreSQL 服务器地址；连接时使用文件中的 `POSTGRES_PASSWORD`。Komari 首次自动完成安装，用户名为 `admin`，密码见 `KOMARI_ADMIN_PASSWORD`。已有 Komari 实例保留原账号和指标库，不自动迁移。
 - 应用连接分别保存在 `.database-connections/{npm,gitea,memos,openlist}.env`（目录 `0700`、文件 `0600`）。首次接入脚本时，优先保留原 Compose 中的数据库环境变量；应用目录已有文件时保留原数据库，避免把 SQLite 或自定义连接切到空库。后续复用这些连接文件；切换数据库须另行备份和迁移，不能只删除连接文件。
-- pgAdmin、Komari 统一通过 NPM 访问，反代目标分别为 `pgadmin4:80`、`komari:25774`，沿用脚本原有的容器内网部署方式。
+- Web 应用沿用容器内网部署，未发布宿主机端口。需要 NPM 时显式组合选择，例如 `8,10`；也可自行配置已有反代或端口映射。pgAdmin、Komari 的反代目标分别为 `pgadmin4:80`、`komari:25774`。
 - 所选服务通常需达到 `running + healthy` 才通过验收，默认最多等待 300 秒，可通过 `SERVICE_WAIT_TIMEOUT` 调整。RustDesk classic 镜像基于 scratch，没有健康探针，两个容器仅检查 `running`；注册与中继连通性仍须通过客户端验证。
+
+- 安装、拉取更新和健康验收都使用明确的服务名及递归依赖清单，兼容旧 Compose 中没有 profile 的基础服务。旧配置的依赖声明仍会被尊重；使用组件模式重新生成配置时，保留 SQLite/外部数据库连接的 NPM、Gitea、Memos、OpenList 不再强加本地 PostgreSQL 依赖。
+- 最后的访问说明仅列出本次选择且正在运行的服务，区分宿主机映射端口、容器内网端口和 RustDesk 主机网络端口。未选中的已有容器保持原状，不会自动停止或删除。
+- Compose 仍保存完整可选模板，并预备受限权限的凭据文件，便于后续增装；生成配置或凭据文件不等于启动相应容器。手动执行启动/更新时也应指定服务名。
 
 ### RustDesk
 
-整合版选择操作 `2` → 场景 `5` → 服务组 `10`（或 `SERVICE_PROFILES=rustdesk`）；`8/all` 也包含该组。旧版 `domestic-vps-init.sh` 使用 profile 名称 `rustdesk`，其 `all` 同样包含该组。
+整合版选择操作 `2` → 场景 `5` → 服务组 `9`（或 `SERVICE_PROFILES=rustdesk`）；仅此组且未启用 Watchtower 时，只启动 `hbbs`、`hbbr`，无需 NPM 或 PostgreSQL。`11/all` 也包含该组。旧版 `domestic-vps-init.sh` 使用 profile 名称 `rustdesk`，其 `all` 同样包含该组；旧版的 NPM、Watchtower 分别通过 `npm`、`watchtower` 明确选择，`none` 仅选择 NPM，继续保留旧版应用的存储方式。
 
 - 保留 [RustDesk 官方 Compose 示例](https://rustdesk.com/docs/en/self-host/rustdesk-server-oss/docker/) 的镜像、命令、依赖、主机网络与重启策略；共享挂载改为 `./rustdesk/data:/root`，默认宿主机路径为 `/root/rustdesk/data`。已有 `./data` 部署请先停服并备份，将原数据和密钥迁入新目录，避免生成新密钥导致客户端不匹配。
 - `network_mode: host` 适用于本项目的 Linux VPS，无需配置 `ports`，也不加入 Compose 默认桥接网络。请在服务器防火墙和云安全组放行 **TCP 21115–21117、UDP 21116**，脚本不会自动开放这些端口。

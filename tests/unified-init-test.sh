@@ -35,7 +35,7 @@ IPERF3_ACTION=0 WATCHTOWER_ACTION=0 SB_UPDATE_ACTION=0 SERVICE_WAIT_TIMEOUT=1
     VPS_SCENE=domestic
     unset IPERF3_ACTION SB_UPDATE_ACTION WATCHTOWER_ACTION
     select_background_actions > "$test_dir/background-menu"
-    [[ "$WATCHTOWER_ACTION" == 1 ]] || fail 'Watchtower 直接回车未默认启用'
+    [[ "$WATCHTOWER_ACTION" == 0 ]] || fail 'Watchtower 直接回车不应默认安装'
     printf '2\n' > "$test_dir/tty-input"
     unset WATCHTOWER_ACTION
     select_background_actions > "$test_dir/background-menu"
@@ -89,13 +89,13 @@ for selection in '1,4,6' 'tools,rss,monitoring' '1,1,4,6'; do
     SERVICE_PROFILES=$selection select_services > "$test_dir/plan"
     [[ "${SELECTED_PROFILE_NAMES[*]}" == 'tools rss monitoring' ]] || fail '序号或名称映射错误'
 done
-SERVICE_PROFILES=8 select_services > "$test_dir/plan"
-[[ ${#SELECTED_PROFILE_NAMES[@]} == 9 ]] || fail '全部服务选择错误'
-for selection in 10 rustdesk; do
+SERVICE_PROFILES=11 select_services > "$test_dir/plan"
+[[ ${#SELECTED_PROFILE_NAMES[@]} == 10 ]] || fail '全部服务选择错误'
+for selection in 9 rustdesk; do
     SERVICE_PROFILES=$selection select_services > "$test_dir/plan"
     [[ "${SELECTED_PROFILE_NAMES[*]}" == rustdesk ]] || fail 'RustDesk 序号或名称映射错误'
 done
-for selection in ',' '1,' ',1' '1,,2' 'unknown' '0,1' '8,1' '11' 'blog' 'games'; do
+for selection in ',' '1,' ',1' '1,,2' 'unknown' '0,1' '11,1' '12' 'blog' 'games'; do
     if (SERVICE_PROFILES=$selection; select_services) > "$test_dir/error" 2>&1; then fail "接受无效服务: $selection"; fi
 done
 if (VPS_SCENE=invalid; select_scene) > "$test_dir/error" 2>&1; then fail '接受无效场景'; fi
@@ -207,7 +207,7 @@ printf '[PASS] TCP 场景差异、部分失败、全部受限及配置保留\n'
         if [[ "$*" == 'compose version --short' ]]; then printf 'mock\n'; return 0; fi
         [[ "$1" == compose && "$2" == --env-file && "$3" == "$STACK_DIR/.browserless.env" ]] || fail 'Compose 未显式加载共享令牌文件'
         if [[ "$*" == *'config --format json'* ]]; then
-            printf '{"name":"stacks","volumes":{"redis-data":{"name":"stacks_redis-data"}}}\n'
+            printf '{"name":"stacks","volumes":{"redis-data":{"name":"stacks_redis-data"}},"services":{"rsshub":{"profiles":["rss"],"depends_on":{"redis":{},"browserless":{}}},"redis":{"profiles":["rss"]},"browserless":{"profiles":["rss"]}}}\n'
         elif [[ "$*" == *'config -q'* ]]; then
             [[ "$*" == *'--profile rss'* ]] || fail '校验未使用所选 profiles'
             [[ "$compose_ok" == 1 ]]

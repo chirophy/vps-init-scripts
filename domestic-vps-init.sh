@@ -259,7 +259,7 @@ else
     info "已通过 UPGRADE_SYSTEM=0 跳过系统升级，仍更新索引并安装所需工具"
 fi
 # ---------- 系统升级处理结束 ----------
-apt-get install -y curl wget ca-certificates tar gnupg jq unattended-upgrades
+apt-get install -y curl wget ca-certificates tar gnupg jq python3 unattended-upgrades
 info "系统更新及基础工具安装完成"
 
 step "终端美化：Starship（Bash）"
@@ -424,8 +424,8 @@ while ! is_valid_domain "${HOMEPAGE_HOST}"; do
 done
 info "Homepage 允许访问域名: ${HOMEPAGE_HOST}"
 
-# NPM 与 Watchtower 始终启动；其余服务按 profile 分类选择
-AVAILABLE_PROFILES=(tools code media rss files monitoring notes rustdesk)
+# 所有容器按需启动；none 兼容为仅 NPM，Watchtower 需明确选择
+AVAILABLE_PROFILES=(tools code media rss files monitoring notes rustdesk npm watchtower)
 declare -A ENABLED_PROFILES=()
 COMPOSE_PROFILE_ARGS=()
 PROFILE_SELECTION="${SERVICE_PROFILES:-}"
@@ -439,10 +439,12 @@ echo "  files       File Browser、OpenList"
 echo "  monitoring  Uptime Kuma、Beszel"
 echo "  notes       Memos"
 echo "  rustdesk    RustDesk（hbbs、hbbr）"
+echo "  npm         NPM 反向代理"
+echo "  watchtower  容器自动更新（可选）"
 
 if [[ -z "${PROFILE_SELECTION}" ]]; then
     if [[ -r /dev/tty ]]; then
-        read -rp "请选择 profiles（逗号分隔；all=全部，none=仅基础组件，默认 all）: " PROFILE_SELECTION < /dev/tty || PROFILE_SELECTION="all"
+        read -rp "请选择 profiles（逗号分隔；all=全部，none=仅 NPM，默认 all）: " PROFILE_SELECTION < /dev/tty || PROFILE_SELECTION="all"
     else
         PROFILE_SELECTION="all"
     fi
@@ -476,7 +478,7 @@ for profile in "${AVAILABLE_PROFILES[@]}"; do
 done
 
 if [[ ${#SELECTED_PROFILE_NAMES[@]} -eq 0 ]]; then
-    info "服务 profiles: none（仅部署 NPM 与 Watchtower）"
+    info "服务 profiles: none（仅部署 NPM）"
 else
     info "服务 profiles: ${SELECTED_PROFILE_NAMES[*]}"
 fi
@@ -521,6 +523,7 @@ services:
 
   # ==================== 网络与证书管理 ====================
   nginx-proxy-manager:
+    profiles: ["npm"]
     image: jc21/nginx-proxy-manager:latest
     container_name: npm
     restart: unless-stopped
@@ -533,6 +536,7 @@ services:
       - ./npm/letsencrypt:/etc/letsencrypt
   # ==================== 自动化更新 ====================
   watchtower:
+    profiles: ["watchtower"]
     image: containrrr/watchtower:latest
     container_name: watchtower
     restart: unless-stopped
@@ -727,16 +731,91 @@ if ! docker compose "${COMPOSE_ENV_ARGS[@]}" -f "${STACK_DIR}/docker-compose.yml
 fi
 info "docker-compose.yml 已生成并通过校验: ${STACK_DIR}/docker-compose.yml"
 
+# 显式指定服务名，避免旧 Compose 中未分组的基础容器混入启动/更新。
+resolve_selected_services() {
+    local configuration resolved
+    local -a profiles=("${SELECTED_PROFILE_NAMES[@]}")
+    [[ ${#profiles[@]} != 0 ]] || profiles=(npm)
+    [[ "${WATCHTOWER_ACTION:-0}" != 1 ]] || profiles+=(watchtower)
+    configuration=$(docker compose "${COMPOSE_ENV_ARGS[@]}" --profile '*' config --format json) || return 1
+    resolved=$(python3 -c '
+import json, sys
+services = json.load(sys.stdin)["services"]
+profiles = set(sys.argv[1:])
+# PostgreSQL 只通过真实 depends_on 进入清单，不把共享 profile 当作直接选择。
+roots = [name for name, cfg in services.items() if name != "postgresql" and
+         (profiles.intersection(cfg.get("profiles", [])) or
+          (name == "nginx-proxy-manager" and "npm" in profiles) or
+          (name == "watchtower" and "watchtower" in profiles))]
+for profile in profiles:
+    if not any(profile in services[n].get("profiles", []) or
+               (profile, n) in (("npm", "nginx-proxy-manager"), ("watchtower", "watchtower")) for n in roots):
+        sys.exit("已有 Compose 缺少所选服务组：" + profile + "；请先使用组件模式生成配置")
+seen = set()
+def visit(name):
+    if name in seen: return
+    if name not in services: sys.exit("缺少依赖服务：" + name)
+    seen.add(name)
+    for dependency in services[name].get("depends_on", {}): visit(dependency)
+    print(name)
+for name in roots: visit(name)
+' "${profiles[@]}" <<< "$configuration") || return 1
+    [[ -n "$resolved" ]] || { error '所选服务清单为空，停止操作'; return 1; }
+    mapfile -t SELECTED_SERVICES <<< "$resolved"
+}
+
+selected_service() {
+    local service
+    for service in "${SELECTED_SERVICES[@]}"; do [[ "$service" != "$1" ]] || return 0; done
+    return 1
+}
+
+print_service_endpoints() {
+    local configuration snapshot
+    configuration=$(docker compose "${COMPOSE_ENV_ARGS[@]}" --profile '*' config --format json) || return 1
+    snapshot=$(docker compose "${COMPOSE_ENV_ARGS[@]}" --profile '*' ps --all --format json "${SELECTED_SERVICES[@]}") || return 1
+    VPS_SERVICE_SNAPSHOT="$snapshot" python3 -c '
+import json, os, sys
+services = json.load(sys.stdin)["services"]
+text = os.environ["VPS_SERVICE_SNAPSHOT"].strip()
+try: rows = json.loads(text or "[]")
+except json.JSONDecodeError: rows = [json.loads(line) for line in text.splitlines() if line.strip()]
+if isinstance(rows, dict): rows = [rows]
+running = {r.get("Service") for r in rows if r.get("State") == "running"}
+ports = {"homepage":3000,"it-tools":80,"gitea":3000,"navidrome":4533,"metube":8081,
+         "rsshub":1200,"browserless":3000,"redis":6379,"filebrowser":80,"openlist":5244,
+         "uptime-kuma":3001,"beszel":8090,"komari":25774,"memos":5230,"pgadmin4":80,"postgresql":5432}
+print("本次所选且正在运行的服务访问说明：")
+for name in sys.argv[1:]:
+    if name not in running: continue
+    cfg = services[name]
+    print("  " + name)
+    if name == "hbbs":
+        print("    主机网络：TCP 21115、21116，UDP 21116；Web 客户端另需 TCP 21118")
+        print("    ID 服务器填 VPS IP/域名；Key 见 rustdesk/data/id_ed25519.pub")
+    elif name == "hbbr":
+        print("    主机网络：TCP 21117；Web 客户端另需 TCP 21119")
+    elif cfg.get("ports"):
+        for p in cfg["ports"]:
+            print("    宿主机 {}:{} → 容器 {}/{}".format(p.get("host_ip", "0.0.0.0"), p.get("published", "动态分配"), p["target"], p.get("protocol", "tcp")))
+        if name == "nginx-proxy-manager": print("    管理界面使用上述映射到容器 81 的端口；首次凭据请查镜像说明")
+    elif name in ports:
+        print("    容器内网 {}:{}（未发布宿主机端口；Web 服务需另行配置反代或端口映射）".format(name, ports[name]))
+    else: print("    无对外访问端口")
+' "${SELECTED_SERVICES[@]}" <<< "$configuration"
+}
+
 # ---------- 5. 拉取镜像 & 启动服务 ----------
 step "5/5 拉取镜像 & 启动服务"
 
 cd "${STACK_DIR}"
 
+resolve_selected_services || exit 1
 info "开始拉取所选服务镜像（任何镜像失败都会停止部署）..."
-docker compose "${COMPOSE_ENV_ARGS[@]}" "${COMPOSE_PROFILE_ARGS[@]}" pull
+docker compose "${COMPOSE_ENV_ARGS[@]}" --profile '*' pull "${SELECTED_SERVICES[@]}"
 
-info "启动基础组件及所选 profile 服务..."
-docker compose "${COMPOSE_ENV_ARGS[@]}" "${COMPOSE_PROFILE_ARGS[@]}" up -d
+info "启动所选服务及其依赖..."
+docker compose "${COMPOSE_ENV_ARGS[@]}" --profile '*' up -d "${SELECTED_SERVICES[@]}"
 
 # 等待容器初始化
 info "等待容器启动（10 秒）..."
@@ -786,7 +865,7 @@ RUNNING=0
 FAILED_LIST=""
 
 # 用纯字段格式避免表头干扰
-PS_OUTPUT=$(docker compose "${COMPOSE_ENV_ARGS[@]}" ps -a --format "{{.Name}} {{.State}}" 2>/dev/null || true)
+PS_OUTPUT=$(docker compose "${COMPOSE_ENV_ARGS[@]}" --profile '*' ps -a --format "{{.Name}} {{.State}}" "${SELECTED_SERVICES[@]}" 2>/dev/null || true)
 
 if [[ -z "$PS_OUTPUT" ]]; then
     error "未检测到任何容器，部署可能完全失败"
@@ -823,19 +902,4 @@ echo ""
 
 echo -e "${CYAN}====== 部署后待办 ======${NC}"
 echo ""
-echo "  1. Nginx Proxy Manager"
-echo "     访问 http://<服务器IP>:81"
-echo "     默认账号: admin@example.com / changeme"
-echo ""
-echo "  2. 各服务默认端口（通过 NPM 反向代理访问）"
-echo "     Homepage:      3000    OpenList:       5244"
-echo "     IT-Tools:      80      File Browser:   80"
-echo "     Gitea:         3000    Uptime Kuma:    3001"
-echo "     Navidrome:     4533    Beszel Hub:     8090"
-echo "     Metube:        8081    Memos:          5230"
-echo "     RSSHub:        1200"
-echo ""
-echo "  3. ghcr.io 镜像拉取失败？"
-echo "     如 homepage / it-tools / metube 拉取超时，可手动配置 ghcr.io 代理"
-echo "     或在 daemon.json 中添加对应加速地址后重新 docker compose --env-file .browserless.env pull"
-echo ""
+print_service_endpoints

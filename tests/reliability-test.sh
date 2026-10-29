@@ -82,12 +82,14 @@ done
 printf '%s\n%s\n' '{"Service":"web","State":"running","Health":"healthy"}' '{"Service":"db","State":"running","Health":"healthy"}' | check_service_snapshot web db > "$test_dir/output"
 (
     COMPOSE_ENV_ARGS=() COMPOSE_PROFILE_ARGS=() SERVICE_WAIT_TIMEOUT=1
+    resolve_selected_services() { SELECTED_SERVICES=(web db); }
     docker() {
         if [[ "$*" == *'config --services'* ]]; then printf 'web\ndb\n'; else printf '%s\n' "$snapshot_ok"; fi
     }
     wait_selected_services 0 > "$test_dir/output"
     snapshot_ok='[{"Service":"web","State":"running","Health":"unhealthy"}]'
     if wait_selected_services 0 > "$test_dir/output" 2>&1; then fail '启动验收忽略缺失和 unhealthy'; fi
+    resolve_selected_services() { SELECTED_SERVICES=(web); }
     : > "$test_dir/polls"
     docker() {
         if [[ "$*" == *'config --services'* ]]; then
@@ -164,17 +166,18 @@ printf '[PASS] 四种模式的边界及组件模式禁止系统升级\n'
     VPS_SCENE=domestic SERVICE_PROFILES=0
     unset WATCHTOWER_ACTION
     select_background_actions > "$test_dir/background-menu"
-    [[ "$WATCHTOWER_ACTION" == 1 ]] || fail 'Watchtower 没有默认启用'
+    [[ "$WATCHTOWER_ACTION" == 0 ]] || fail 'Watchtower 不应默认启用'
+    WATCHTOWER_ACTION=1
     select_services > "$test_dir/output"
-    [[ "${COMPOSE_PROFILE_ARGS[*]}" == '--profile watchtower' ]] || fail 'Watchtower 没有独立选择'
+    [[ "${COMPOSE_PROFILE_ARGS[*]}" == '--profile npm --profile watchtower' ]] || fail 'Watchtower 没有独立选择'
     WATCHTOWER_ACTION=0 select_services > "$test_dir/output"
-    [[ ${#COMPOSE_PROFILE_ARGS[@]} == 0 ]] || fail '显式保持现状仍新增 Watchtower profile'
+    [[ "${COMPOSE_PROFILE_ARGS[*]}" == '--profile npm' ]] || fail '显式保持现状仍新增 Watchtower profile'
     probe_background_state() { BACKGROUND_PRESENT=1; BACKGROUND_STATE='运行中'; }
     unset WATCHTOWER_ACTION
     select_background_actions > "$test_dir/background-menu"
     grep -q '当前状态：运行中' "$test_dir/background-menu" || fail '没有显示已有任务的状态'
     grep -q '0) 保持现状' "$test_dir/background-menu" || fail '已有任务不能保持现状'
-    [[ "$WATCHTOWER_ACTION" == 1 ]] || fail '已有任务默认选项不是启用'
+    [[ "$WATCHTOWER_ACTION" == 0 ]] || fail '已有 Watchtower 默认应保持现状'
 )
 printf '[PASS] 后台任务默认启用、首次/已有菜单、显式保持及独立启停\n'
 

@@ -328,7 +328,7 @@ select_mode() {
     info "已选择：$(mode_label "$VPS_MODE")"
 }
 
-# 安装模式默认启用适用的后台任务；已有任务才展示“保持现状”。
+# iperf3/sing-box 安装模式默认启用；Watchtower 默认保持现状，新装不启用。
 # ACTION=0 仍接受显式环境变量，兼容旧自动化；检查/更新模式始终不调整后台任务。
 
 select_background_actions() {
@@ -337,7 +337,7 @@ select_background_actions() {
         echo '  以下任务独立选择；启用后会持续运行或按计划执行。'
         if [[ "$VPS_SCENE" == domestic ]]; then
         echo '  Watchtower：定时更新所选服务；PostgreSQL、Memos、Komari 不参与。'
-            choose_background_action WATCHTOWER_ACTION 'Watchtower 自动更新'
+            choose_background_action WATCHTOWER_ACTION 'Watchtower 自动更新' 0
         else
             printf '  iperf3：启动网络测速服务，端口 %s；客户端命令：iperf3 -c 服务器地址 -p %s。\n' "${IPERF3_PORT:-5201}" "${IPERF3_PORT:-5201}"
             echo '  此服务无身份认证，请仅向可信 IP 放行端口。'
@@ -408,21 +408,22 @@ probe_background_state() {
 }
 
 choose_background_action() {
-    local variable=$1 label=$2
+    local variable=$1 label=$2 default=${3:-1}
     probe_background_state "$variable"
-    show_background_menu "$label" "$BACKGROUND_PRESENT" "$BACKGROUND_STATE"
-    require_choice "$variable" '请选择后台任务操作（回车=1）: ' 1
+    show_background_menu "$label" "$BACKGROUND_PRESENT" "$BACKGROUND_STATE" "$default"
+    require_choice "$variable" "请选择后台任务操作（回车=$default）: " "$default"
 }
 
 show_background_menu() {
     printf '\n%s：\n' "$1"
     printf '  当前状态：%s\n' "${3:-未配置}"
-    echo '  1) 启用（默认）'
+    if [[ "${4:-1}" == 1 ]]; then echo '  1) 启用（默认）'; else echo '  1) 启用'; fi
     if [[ "${2:-0}" == 1 ]]; then
         echo '  2) 停用已有任务'
-        echo '  0) 保持现状'
+        if [[ "${4:-1}" == 0 ]]; then echo '  0) 保持现状（默认）'; else echo '  0) 保持现状'; fi
     else
         echo '  2) 不启用（跳过此任务）'
+        if [[ "${4:-1}" == 0 ]]; then echo '  0) 不启用（默认）'; fi
     fi
 }
 
@@ -443,7 +444,7 @@ select_scene() {
     echo '  4) 精简基础环境 — 低延迟 TCP 方案，不安装 NextTrace / sing-box'
     echo ''
     echo '  自托管应用：'
-    echo '  5) Docker 服务 — NPM 反向代理 + 按需选择的应用（原国内场景）'
+    echo '  5) Docker 服务 — 按需选择应用与反向代理（原国内场景）'
     echo '     国内外 VPS 均可选择；是否需要镜像代理取决于服务器网络。'
     echo '  0) 退出脚本'
     if [[ "${VPS_MODE:-full}" == full ]]; then
@@ -497,14 +498,14 @@ select_components() {
 }
 
 select_services() {
-    AVAILABLE_PROFILES=(tools code media rss files monitoring notes database rustdesk)
+    AVAILABLE_PROFILES=(tools code media rss files monitoring notes database rustdesk npm)
     declare -gA ENABLED_PROFILES=()
     COMPOSE_PROFILE_ARGS=()
     SELECTED_PROFILE_NAMES=()
     local profile selection item
     local -a requested=()
     step "选择服务组 · $(mode_label "${VPS_MODE:-full}")"
-    echo '  基础服务：NPM（反向代理与证书管理）+ PostgreSQL，始终包含。'
+    echo '  仅启动所选服务及其依赖；NPM 可选，PostgreSQL 按应用依赖启动。'
     if [[ "${VPS_MODE:-full}" == status ]]; then
         echo '  请选择要检查的服务组；缺少容器或服务未启动时会报告异常。'
     elif [[ "${VPS_MODE:-full}" == update ]]; then
@@ -519,15 +520,16 @@ select_services() {
     echo '  5) 文件管理 — File Browser + OpenList'
     echo '  6) 服务监控 — Uptime Kuma + Beszel + Komari'
     echo '  7) 笔记备忘 — Memos'
-    echo '  8) 全部可选服务组'
-    echo '  9) 数据库管理 — pgAdmin'
-    echo '  10) 远程桌面 — RustDesk（hbbs + hbbr）'
-    echo '  0) 仅基础服务 NPM + PostgreSQL（默认）'
-    echo '  可多选，例如 1,4,6；0 和 8 需单独使用。未选中的已有服务不会被卸载。'
+    echo '  8) 数据库管理 — pgAdmin'
+    echo '  9) 远程桌面 — RustDesk（hbbs + hbbr）'
+    echo '  10) 反向代理 — NPM（可与其他组组合）'
+    echo '  11) 全部可选服务组'
+    echo '  0) 仅 NPM 及其数据库（默认，兼容 none）'
+    echo '  可多选，例如 1,4,6；0 和 11 需单独使用。未选中的已有服务不会被卸载。'
     require_choice SERVICE_PROFILES '请选择服务组 [回车=0]: ' 0
     selection=${SERVICE_PROFILES//[[:space:]]/}
     case "$selection" in
-        8|all) requested=("${AVAILABLE_PROFILES[@]}") ;;
+        11|all) requested=("${AVAILABLE_PROFILES[@]}") ;;
         0|none) requested=() ;;
         *)
             [[ "$selection" != ,* && "$selection" != *, && "$selection" != *,,* ]] || die '服务选择不能包含空项'
@@ -539,8 +541,9 @@ select_services() {
             1|tools) profile=tools ;; 2|code) profile=code ;;
             3|media) profile=media ;; 4|rss) profile=rss ;;
             5|files) profile=files ;; 6|monitoring) profile=monitoring ;;
-            7|notes) profile=notes ;; 9|database) profile=database ;;
-            10|rustdesk) profile=rustdesk ;;
+            7|notes) profile=notes ;; 8|database) profile=database ;;
+            9|rustdesk) profile=rustdesk ;;
+            10|npm) profile=npm ;;
             *) die "未知服务选项: $item" ;;
         esac
         ENABLED_PROFILES["$profile"]=1
@@ -556,6 +559,7 @@ select_services() {
 build_compose_profile_args() {
     local profile
     COMPOSE_PROFILE_ARGS=()
+    if [[ ${#SELECTED_PROFILE_NAMES[@]} == 0 ]]; then COMPOSE_PROFILE_ARGS+=(--profile npm); fi
     for profile in "${SELECTED_PROFILE_NAMES[@]}"; do
         COMPOSE_PROFILE_ARGS+=(--profile "$profile")
     done
@@ -575,6 +579,7 @@ profile_label() {
         notes) printf '笔记备忘（Memos）' ;;
         database) printf '数据库管理（pgAdmin）' ;;
         rustdesk) printf '远程桌面（RustDesk）' ;;
+        npm) printf '反向代理（NPM）' ;;
     esac
 }
 
@@ -637,7 +642,8 @@ print_plan() {
             status) info '服务操作：读取已有 Compose，检查所选容器运行 / 健康状态' ;;
             update) info '服务操作：读取已有 Compose，拉取所选镜像并重新启动服务' ;;
         esac
-        info '服务范围：NPM（反向代理与证书管理）+ PostgreSQL'
+        info '服务范围：所选服务及其依赖（NPM 不再附带安装）'
+        if [[ ${#SELECTED_PROFILE_NAMES[@]} == 0 ]]; then info '选择 0/none：仅 NPM 及其数据库'; fi
         for profile in "${SELECTED_PROFILE_NAMES[@]}"; do
             printf '  + %s\n' "$(profile_label "$profile")"
         done
@@ -1630,6 +1636,30 @@ DB_INIT
     chmod 0644 "$STACK_DIR/postgresql/init/10-apps.sh"
 }
 
+# 仅根据已保存连接调整模板依赖，不修改连接或搬迁数据。
+adjust_database_dependencies() {
+    python3 - "$COMPOSE_CANDIDATE" "$STACK_DIR" <<'PY'
+import json, pathlib, re, sys
+candidate, root = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+text = candidate.read_text(encoding="utf-8")
+for app, service, key in (("npm", "nginx-proxy-manager", "DB_POSTGRES_HOST"),
+                          ("gitea", "gitea", "GITEA__database__HOST"),
+                          ("memos", "memos", "MEMOS_DSN"),
+                          ("openlist", "openlist", "DB_HOST")):
+    env = {}
+    for line in (root / ".database-connections" / (app + ".env")).read_text(encoding="utf-8").splitlines():
+        if not line or line.startswith("#"): continue
+        k, v = line.split("=", 1)
+        env[k.upper()] = json.loads(v) if v.startswith(chr(34)) else v.strip(chr(39))
+    host = env.get(key.upper(), "")
+    local = "@postgresql:" in host if app == "memos" else host.split(":")[0] == "postgresql"
+    if not local:
+        pattern = r"(^  " + re.escape(service) + r":\n)(.*?)(?=^  [a-zA-Z0-9_-]+:|^volumes:)"
+        text = re.sub(pattern, lambda m: m[1] + m[2].replace("    depends_on:\n      postgresql:\n        condition: service_healthy\n", ""), text, flags=re.M | re.S)
+candidate.write_text(text, encoding="utf-8", newline="\n")
+PY
+}
+
 deploy_services() {
 # 只调整默认路径与挂载，不自动搬迁、覆盖旧数据。
 if [[ "${STACK_DIR%/}" == /root && ! -f "$STACK_DIR/docker-compose.yml" && -f /opt/stacks/docker-compose.yml ]]; then
@@ -1697,6 +1727,7 @@ services:
 
   # ==================== 网络与证书管理 ====================
   nginx-proxy-manager:
+    profiles: ["npm"]
     labels: *vps-labels
     image: jc21/nginx-proxy-manager:latest
     container_name: npm
@@ -1717,6 +1748,7 @@ services:
       test: ['CMD', '/usr/bin/check-health']
   # ==================== 共享数据库与管理 ====================
   postgresql:
+    profiles: ["npm", "code", "files", "monitoring", "notes", "database"]
     image: postgres:17-alpine
     container_name: postgresql
     restart: unless-stopped
@@ -2047,6 +2079,7 @@ if [[ ! -e "$STACK_DIR/pgadmin/servers.json" ]]; then
     printf '%s\n' '{"Servers":{"1":{"Name":"VPS PostgreSQL","Group":"VPS","Host":"postgresql","Port":5432,"MaintenanceDB":"postgres","Username":"postgres","SSLMode":"prefer"}}}' > "$STACK_DIR/pgadmin/servers.json"
 fi
 
+adjust_database_dependencies || { rm -f -- "$COMPOSE_CANDIDATE"; return 1; }
 if ! docker compose --env-file "$BROWSERLESS_ENV_FILE" --env-file "$STACK_DIR/.database.env" --project-directory "$STACK_DIR" -f "$COMPOSE_CANDIDATE" "${COMPOSE_PROFILE_ARGS[@]}" config -q; then
     rm -f -- "$COMPOSE_CANDIDATE"
     error "docker-compose.yml 校验失败，保留原文件，未拉取镜像或启动服务"
@@ -2070,7 +2103,7 @@ if ! start_selected_services 0; then
         if [[ -n "$compose_backup" ]]; then
             cp -a -- "$compose_backup" "$COMPOSE_TARGET" || return 1
             error '部署失败，已恢复原 Compose，尝试恢复原服务配置'
-            if docker compose "${COMPOSE_ENV_ARGS[@]}" "${COMPOSE_PROFILE_ARGS[@]}" up -d && wait_selected_services; then
+            if resolve_selected_services && docker compose "${COMPOSE_ENV_ARGS[@]}" --profile '*' up -d "${SELECTED_SERVICES[@]}" && wait_selected_services; then
                 info '原 Compose 对应的服务已恢复并通过启动检查'
             else
                 error '原 Compose 已恢复，但服务恢复未通过，请检查容器状态'
@@ -2121,27 +2154,11 @@ echo ""
 
 echo -e "${CYAN}====== 部署后待办 ======${NC}"
 echo ""
-echo "  1. Nginx Proxy Manager"
-echo "     访问 http://<服务器IP>:81"
-echo "     首次登录凭据请查所用镜像版本说明，登录后立即修改"
-echo ""
-echo "  2. 各服务默认端口（通过 NPM 反向代理访问）"
-echo "     Homepage:      3000    OpenList:       5244"
-echo "     IT-Tools:      80      File Browser:   80"
-echo "     Gitea:         3000    Uptime Kuma:    3001"
-echo "     Navidrome:     4533    Beszel Hub:     8090"
-echo "     Metube:        8081    Memos:          5230"
-echo "     RSSHub:        1200"
-echo "     pgAdmin:       80      Komari:         25774"
-echo "     PostgreSQL:    5432（仅容器内网）"
-echo "     数据库与管理账号凭据：${STACK_DIR}/.database.env（0600，不输出密码）"
-echo "     应用数据库连接：${STACK_DIR}/.database-connections/（重跑复用）"
-echo ""
-echo "  3. ghcr.io 镜像拉取失败？"
-echo "     如 homepage / it-tools / metube 拉取超时，可手动配置 ghcr.io 代理"
-echo "     请配置 Docker daemon 的 HTTP(S) 网络代理，或显式改用可信的镜像仓库地址"
-echo "     daemon.json 的 registry-mirrors 仅适用于 Docker Hub，不会透明代理 ghcr.io"
-echo ""
+print_service_endpoints || return 1
+if selected_service postgresql || selected_service pgadmin4 || selected_service komari; then
+    info "数据库与管理账号凭据：${STACK_DIR}/.database.env（0600，不输出密码）"
+fi
+
 }
 
 read_root_crontab() {
@@ -2262,12 +2279,11 @@ sys.exit(1 if failed else 0)
 wait_selected_services() {
     local timeout=${1:-$SERVICE_WAIT_TIMEOUT} configured snapshot report deadline result
     local -a expected=()
-    configured=$(docker compose "${COMPOSE_ENV_ARGS[@]}" "${COMPOSE_PROFILE_ARGS[@]}" config --services) || { error '无法解析所选服务清单'; return 1; }
-    [[ -n "$configured" ]] || { error '所选服务清单为空'; return 1; }
-    mapfile -t expected <<< "$configured"
+    resolve_selected_services || return 1
+    expected=("${SELECTED_SERVICES[@]}")
     deadline=$((SECONDS + timeout))
     while true; do
-        snapshot=$(docker compose "${COMPOSE_ENV_ARGS[@]}" "${COMPOSE_PROFILE_ARGS[@]}" ps --all --format json) || { error '读取容器状态失败'; return 1; }
+        snapshot=$(docker compose "${COMPOSE_ENV_ARGS[@]}" --profile '*' ps --all --format json "${SELECTED_SERVICES[@]}") || { error '读取容器状态失败'; return 1; }
         if report=$(check_service_snapshot "${expected[@]}" <<< "$snapshot"); then
             printf '%s\n' "$report"
             return 0
@@ -2284,7 +2300,82 @@ wait_selected_services() {
     done
 }
 
+# 显式指定服务名，避免旧 Compose 中未分组的基础容器混入启动/更新。
+resolve_selected_services() {
+    local configuration resolved
+    local -a profiles=("${SELECTED_PROFILE_NAMES[@]}")
+    [[ ${#profiles[@]} != 0 ]] || profiles=(npm)
+    [[ "${WATCHTOWER_ACTION:-0}" != 1 ]] || profiles+=(watchtower)
+    configuration=$(docker compose "${COMPOSE_ENV_ARGS[@]}" --profile '*' config --format json) || return 1
+    resolved=$(python3 -c '
+import json, sys
+services = json.load(sys.stdin)["services"]
+profiles = set(sys.argv[1:])
+# PostgreSQL 只通过真实 depends_on 进入清单，不把共享 profile 当作直接选择。
+roots = [name for name, cfg in services.items() if name != "postgresql" and
+         (profiles.intersection(cfg.get("profiles", [])) or
+          (name == "nginx-proxy-manager" and "npm" in profiles) or
+          (name == "watchtower" and "watchtower" in profiles))]
+for profile in profiles:
+    if not any(profile in services[n].get("profiles", []) or
+               (profile, n) in (("npm", "nginx-proxy-manager"), ("watchtower", "watchtower")) for n in roots):
+        sys.exit("已有 Compose 缺少所选服务组：" + profile + "；请先使用组件模式生成配置")
+seen = set()
+def visit(name):
+    if name in seen: return
+    if name not in services: sys.exit("缺少依赖服务：" + name)
+    seen.add(name)
+    for dependency in services[name].get("depends_on", {}): visit(dependency)
+    print(name)
+for name in roots: visit(name)
+' "${profiles[@]}" <<< "$configuration") || return 1
+    [[ -n "$resolved" ]] || { error '所选服务清单为空，停止操作'; return 1; }
+    mapfile -t SELECTED_SERVICES <<< "$resolved"
+}
+
+selected_service() {
+    local service
+    for service in "${SELECTED_SERVICES[@]}"; do [[ "$service" != "$1" ]] || return 0; done
+    return 1
+}
+
+print_service_endpoints() {
+    local configuration snapshot
+    configuration=$(docker compose "${COMPOSE_ENV_ARGS[@]}" --profile '*' config --format json) || return 1
+    snapshot=$(docker compose "${COMPOSE_ENV_ARGS[@]}" --profile '*' ps --all --format json "${SELECTED_SERVICES[@]}") || return 1
+    VPS_SERVICE_SNAPSHOT="$snapshot" python3 -c '
+import json, os, sys
+services = json.load(sys.stdin)["services"]
+text = os.environ["VPS_SERVICE_SNAPSHOT"].strip()
+try: rows = json.loads(text or "[]")
+except json.JSONDecodeError: rows = [json.loads(line) for line in text.splitlines() if line.strip()]
+if isinstance(rows, dict): rows = [rows]
+running = {r.get("Service") for r in rows if r.get("State") == "running"}
+ports = {"homepage":3000,"it-tools":80,"gitea":3000,"navidrome":4533,"metube":8081,
+         "rsshub":1200,"browserless":3000,"redis":6379,"filebrowser":80,"openlist":5244,
+         "uptime-kuma":3001,"beszel":8090,"komari":25774,"memos":5230,"pgadmin4":80,"postgresql":5432}
+print("本次所选且正在运行的服务访问说明：")
+for name in sys.argv[1:]:
+    if name not in running: continue
+    cfg = services[name]
+    print("  " + name)
+    if name == "hbbs":
+        print("    主机网络：TCP 21115、21116，UDP 21116；Web 客户端另需 TCP 21118")
+        print("    ID 服务器填 VPS IP/域名；Key 见 rustdesk/data/id_ed25519.pub")
+    elif name == "hbbr":
+        print("    主机网络：TCP 21117；Web 客户端另需 TCP 21119")
+    elif cfg.get("ports"):
+        for p in cfg["ports"]:
+            print("    宿主机 {}:{} → 容器 {}/{}".format(p.get("host_ip", "0.0.0.0"), p.get("published", "动态分配"), p["target"], p.get("protocol", "tcp")))
+        if name == "nginx-proxy-manager": print("    管理界面使用上述映射到容器 81 的端口；首次凭据请查镜像说明")
+    elif name in ports:
+        print("    容器内网 {}:{}（未发布宿主机端口；Web 服务需另行配置反代或端口映射）".format(name, ports[name]))
+    else: print("    无对外访问端口")
+' "${SELECTED_SERVICES[@]}" <<< "$configuration"
+}
+
 prepare_postgresql_databases() {
+    selected_service postgresql || return 0
     # 兼容仍在使用旧 Compose 的状态/更新模式。
     grep -q '^  postgresql:' "$STACK_DIR/docker-compose.yml" || return 0
     [[ -f "$STACK_DIR/.database.env" && -f "$STACK_DIR/postgresql/init/10-apps.sh" ]] || { error '缺少数据库凭据或初始化文件，请先恢复备份或使用组件模式'; return 1; }
@@ -2324,13 +2415,14 @@ PY
 }
 
 start_selected_services() {
+    resolve_selected_services || return 1
     local update=$1
     if [[ "$update" == 1 ]]; then
-        docker compose "${COMPOSE_ENV_ARGS[@]}" "${COMPOSE_PROFILE_ARGS[@]}" pull || { error '镜像更新失败，未执行启动'; return 1; }
+        docker compose "${COMPOSE_ENV_ARGS[@]}" --profile '*' pull "${SELECTED_SERVICES[@]}" || { error '镜像更新失败，未执行启动'; return 1; }
     fi
     prepare_postgresql_databases || return 1
     # 普通安装只补齐缺失镜像；不主动替换已有镜像。
-    docker compose "${COMPOSE_ENV_ARGS[@]}" "${COMPOSE_PROFILE_ARGS[@]}" up -d || { error 'Compose 启动失败'; return 1; }
+    docker compose "${COMPOSE_ENV_ARGS[@]}" --profile '*' up -d "${SELECTED_SERVICES[@]}" || { error 'Compose 启动失败'; return 1; }
     initialize_komari || { error 'Komari 首次配置失败，请检查服务日志后重跑'; return 1; }
     if [[ "$WATCHTOWER_ACTION" == 2 ]]; then
         docker compose "${COMPOSE_ENV_ARGS[@]}" --profile watchtower stop watchtower || return 1
@@ -2413,10 +2505,11 @@ show_help() {
   3) 仅 sing-box
   0) 不选择
 后台选项（IPERF3_ACTION / WATCHTOWER_ACTION / SB_UPDATE_ACTION）：
-  1) 启用（安装模式中适用的任务默认选择）
+  1) 启用（iperf3 / sing-box 安装模式默认选择）
   2) 新任务不启用；已有任务停用
   0) 保持现状（已有任务时显示，也接受显式环境变量）
-新装时菜单只显示上述前两项；检查/更新模式不显示后台菜单，ACTION 默认保持为 0。
+Watchtower 默认选择 0，新装不启用；iperf3 / sing-box 新装只显示前两项。
+检查/更新模式不显示后台菜单，ACTION 默认保持为 0。
 Docker 服务组（SERVICE_PROFILES，支持逗号多选，也接受对应 profile 名称）：
   1) tools：导航与工具（Homepage + IT-Tools）
   2) code：代码托管（Gitea）
@@ -2425,11 +2518,12 @@ Docker 服务组（SERVICE_PROFILES，支持逗号多选，也接受对应 profi
   5) files：文件管理（File Browser + OpenList）
   6) monitoring：服务监控（Uptime Kuma + Beszel + Komari）
   7) notes：笔记备忘（Memos）
-  8) all：全部服务组
-  9) database：数据库管理（pgAdmin）
-  10) rustdesk：远程桌面（hbbs + hbbr，共享 rustdesk/data，使用主机网络）
-  0) none：仅基础服务 NPM + PostgreSQL（默认）
-例如 1,4,6；0 和 8 需单独使用。后台任务单独选择，未选择的已有服务不会被卸载。
+  8) database：数据库管理（pgAdmin）
+  9) rustdesk：远程桌面（hbbs + hbbr，共享 rustdesk/data，使用主机网络）
+  10) npm：可选 NPM 反向代理，可与其他组组合
+  11) all：全部服务组
+  0) none：仅 NPM 及其数据库（默认）
+例如 1,4,6；0 和 11 需单独使用。后台任务单独选择，未选择的已有服务不会被卸载。
 其他变量：VPS_HOSTNAME、UPGRADE_SYSTEM、INSTALL_STARSHIP、RESET_STARSHIP_CONFIG、
           IPERF3_PORT、HOMEPAGE_HOST、MEMOS_IMAGE、STACK_DIR、COMPOSE_PROJECT_NAME、DOCKER_MIRRORS、SERVICE_WAIT_TIMEOUT。
 数据库：PGADMIN_DEFAULT_EMAIL（默认 admin@example.com）；首次可通过 POSTGRES_PASSWORD、
